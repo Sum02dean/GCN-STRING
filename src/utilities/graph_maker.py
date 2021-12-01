@@ -5,12 +5,6 @@ import xpdb
 from Bio.PDB import PDBParser
 import networkx as nx
 from numpy.linalg import matrix_rank
-from matplotlib.backends.backend_pdf import PdfPages
-from src.utilities.parallelize_dca_stats import parallelize_dataframe
-from src.utilities.get_dca_stats import get_dca_stats, get_dca_stats_with_figs
-from src.utilities.dca_lab import DcaLab
-from src.utilities.frequency_coupler import FrequencyCoupler as fc
-from src.utilities.msa_synthesizer import MsaSynthesizer as MSA
 import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
@@ -605,5 +599,4 @@ class GraphMaker:
                 print('Skipped')
                 print(e)
                 pass
-
         return graphs, labels
