@@ -10,8 +10,10 @@ pdb_files_for_PDB = '/mnt/mnemo6/damian/STRING_freeze_v11.5/pdb/data/biounit/coo
 # Tao STRING 11.5 paths
 anndata_path = ('/mnt/mnemo6/tao/PPI_Coevolution/CoEvo_data_STRING11.5/'
                 '511145_EggNOGmaxLevel1224_eggNOGfilteredData/STRINPhyPPI_Benchmark/allPPI_allInfo_frame.csv')
+
 paired_msa_path = ('/mnt/mnemo6/tao/PPI_Coevolution/CoEvo_data_STRING11.5'
                    '/511145_EggNOGmaxLevel1224_eggNOGfilteredData/pair_MSA_Nf90_PasteAlign')
+
 configs_dir = 'configs_11.5'
 coevo_path = ('/mnt/mnemo6/tao/PPI_Coevolution/CoEvo_data_STRING11.5'
               '/511145_EggNOGmaxLevel1224_eggNOGfilteredData/coevolutoin_result_DCA/')
@@ -33,7 +35,7 @@ nsp_seq = "/mnt/mnemo6/tao/PPI_Coevolution/STRING_data_11.5/511145_netsurfp2_out
 
 
 df = pd.read_csv(anndata_path, sep='\t')
-# n_samples = use -1 for all
+# n_samples: use -1 for all
 n_samples = -1
 gm = GraphMaker(anndata_path=anndata_path)
 graphs, labels = gm.get_computational_graph(n_samples=n_samples, string_to_af=ecoli_ext_string_to_af,

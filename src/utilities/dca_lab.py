@@ -13,7 +13,7 @@ class DcaLab:
     def __init__(self, anndata_path):
         """Contains the tools for calculating DCA workflows.
 
-        :param anndata_path: path to all_info... file.
+        :param anndata_path: path to "all_info..." file.
         :type anndata_path: string
         """
         # Generate annotation datafiles
@@ -21,7 +21,10 @@ class DcaLab:
         self.anndata = pd.read_csv(anndata_path, sep='\t')
 
     def make_triangular_dca_array(self, file_name):
-        """Converts raw DCA npy files into an upper triangle DCA contact map
+        """Converts raw DCA *.npy files into an upper triangle DCA contact map
+
+        :param file_name: DCA numpy file.
+        :type anndata_path: string
 
         :return: The upper triangle DCA contact map
         :rtype: numpy array
@@ -48,6 +51,13 @@ class DcaLab:
         return dca_array
 
     def get_string_2_pdp_list(self, dist_path):
+        """ Get the mapping of STRING-PDB files
+
+        :param dist_path: _description_
+        :type dist_path: _type_
+        :return: _description_
+        :rtype: _type_
+        """
         # Import all String-PDB mapped files
         with open(dist_path, 'rb') as handle:
             str_2_pdb = pickle.load(handle)
@@ -67,7 +77,7 @@ class DcaLab:
         sfn_m = sfn.split('and')
         return sfn_m
 
-    def get_anndata_field(self, field='STRING_ID1', pair_id=[0, 0]):
+    def get_anndata_field(self, field='', pair_id=[0, 0]):
         """Extracts a column from a CSV file based on column name at a specific row
 
         :param field: column name, defaults to 'STRING_ID1'
@@ -78,8 +88,12 @@ class DcaLab:
         :rtype: Series
         """
         # Subset the field from the row specified by pair_id
-        f = self.anndata.loc[(self.anndata['STRING_ID1'] == pair_id[0])
-                             & (self.anndata['STRING_ID2'] == pair_id[1])][field]
+        if field == '':
+            print("Please provide a valid value")
+            f = None
+        else:
+            f = self.anndata.loc[(self.anndata['STRING_ID1'] == pair_id[0])
+                                 & (self.anndata['STRING_ID2'] == pair_id[1])][field]
         return f
 
     def create_dictionary(self, dist_path, file_path, get_dca=True, suffix=".npy"):
