@@ -128,3 +128,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Directories
+src/scripts/graph_data/
+src/scripts/graph_labels/

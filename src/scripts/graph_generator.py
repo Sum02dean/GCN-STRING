@@ -1,5 +1,8 @@
-from src.utilities.graph_maker import GraphMaker
+import sys
 import pandas as pd
+sys.path.append("../")  # nopep8
+from utilities.gcn_utills import *
+
 
 # ALPHA-Fold paths
 ecoli_ext_string_to_af = "/mnt/mnemo6/damian/STRING_derived_v11.5/alphafold/mapping/83333.511145.tsv"
@@ -36,7 +39,7 @@ nsp_seq = "/mnt/mnemo6/tao/PPI_Coevolution/STRING_data_11.5/511145_netsurfp2_out
 
 df = pd.read_csv(anndata_path, sep='\t')
 # n_samples: use -1 for all
-n_samples = -1
+n_samples = 10
 gm = GraphMaker(anndata_path=anndata_path)
 graphs, labels = gm.get_computational_graph(n_samples=n_samples, string_to_af=ecoli_ext_string_to_af,
                                             ns_path_msa=nsp_msa,
