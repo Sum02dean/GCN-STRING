@@ -73,7 +73,7 @@ class GCN(torch.nn.Module):
 
         # Layers
         self.cat_linear = Linear(
-            self.hidden_channels * 2, self.hidden_channels)
+            self.hidden_channels * 2, self.num_classes)
 
         # Paramteric RelU
         self.cat_prelu = torch.nn.PReLU()
@@ -113,6 +113,7 @@ class GCN(torch.nn.Module):
 
         #### di_graph ####
         x = torch.concat((x_1, x_2), dim=0)
-        x = self.cat_batch_norm(x)
         x = self.cat_linear(x)
+        x = self.cat_batch_norm(x)
+        x = self.cat_prelu(x)
         return x
