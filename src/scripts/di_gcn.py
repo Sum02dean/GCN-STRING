@@ -357,49 +357,103 @@ anndata = pd.read_csv(anndata_path, sep='\t')
 ##############################
 
 
-# Itstantiate graph collections
-graphs_1 = []
-graphs_2 = []
-graph_labels = []
+# Globals
+SAVE = True
 
 # Generate all graphs
 rows, cols = np.shape(anndata)
 for i in tqdm(range(rows)):
-    # Grab protein names
-    protein_1, protein_2 = anndata.loc[i, ['STRING_ID1', 'STRING_ID2']]
 
-    # Pull out path for each protein
-    p1_path, p2_path = netsurf_d[protein_1], netsurf_d[protein_2]
+    try:
+        # Grab protein names
+        protein_1, protein_2 = anndata.loc[i, ['STRING_ID1', 'STRING_ID2']]
+        di_graph_name = "and".join([protein_1, protein_2])
 
-    # Get raw protein data
-    p1_x, p2_x = pd.read_csv(p1_path), pd.read_csv(p2_path)
-    seq_1, seq_2 = "".join(p1_x['seq'].values), "".join(p2_x['seq'].values)
+        # Pull out path for each protein
+        p1_path, p2_path = netsurf_d[protein_1], netsurf_d[protein_2]
 
-    # Get interaction label
-    interact_meta = anndata[(anndata['STRING_ID1'] == protein_1) & (
-        anndata['STRING_ID2'] == protein_2)]
-    interact_stataus = interact_meta['benchmark_status'].values
-    interact_label = 1 if interact_stataus == 'P' else 0
-    graph_labels.append(interact_label)
+        # Get raw protein data
+        p1_x, p2_x = pd.read_csv(p1_path), pd.read_csv(p2_path)
+        seq_1, seq_2 = "".join(p1_x['seq'].values), "".join(p2_x['seq'].values)
 
-    # Extract alpha-fold structure based on protein names
-    residues_1 = generate_alpha_fold_structures(string_to_af, protein_1)
-    residues_2 = generate_alpha_fold_structures(string_to_af, protein_2)
+        # Get interaction label
+        interact_meta = anndata[(anndata['STRING_ID1'] == protein_1) & (
+            anndata['STRING_ID2'] == protein_2)]
+        interact_stataus = interact_meta['benchmark_status'].values
+        interact_label = 1 if interact_stataus == 'P' else 0
 
-    # Generate proximitty matrices
-    prox_1 = generate_proximity_matrix(
-        residues_1, residues_1, angstroms=10, show=False)
-    prox_2 = generate_proximity_matrix(
-        residues_2, residues_2, angstroms=10, show=False)
+        # Extract alpha-fold structure based on protein names
+        residues_1 = generate_alpha_fold_structures(string_to_af, protein_1)
+        residues_2 = generate_alpha_fold_structures(string_to_af, protein_2)
 
-    # Remove self-loops from graphs
-    G_1 = generate_graphs(prox_1, show=False, self_loops=False)
-    G_2 = generate_graphs(prox_2, show=False, self_loops=False)
+        # Generate proximity matrices
+        prox_1 = generate_proximity_matrix(
+            residues_1, residues_1, angstroms=10, show=False)
+        prox_2 = generate_proximity_matrix(
+            residues_2, residues_2, angstroms=10, show=False)
 
-    # Populate each node with netsurfp features
-    G_1 = populate_graph_features(G_1, x_net_surf=p1_x)
-    G_2 = populate_graph_features(G_2, x_net_surf=p2_x)
+        # Remove self-loops from graphs
+        G_1 = generate_graphs(prox_1, show=False, self_loops=False)
+        G_2 = generate_graphs(prox_2, show=False, self_loops=False)
 
-    # Append graphs
-    graphs_1.append(G_1)
-    graphs_2.append(G_2)
+        # Populate each node with netsurfp features
+        G_1 = populate_graph_features(G_1, x_net_surf=p1_x)
+        G_2 = populate_graph_features(G_2, x_net_surf=p2_x)
+
+        if SAVE:
+            ######## Save the graphs ########
+            folder_1 = "di_graphs_1"
+            folder_2 = "di_graphs_2"
+            labels_folder_name = 'di_graph_labels'
+
+            # Check directories exist - graphs_1
+            if not(os.path.isdir(folder_1)):
+                print("Created {} directory.".format(folder_1))
+                os.mkdir(folder_1)
+
+            # Check directories exist - graphs_2
+            if not(os.path.isdir(folder_2)):
+                print("Created {} directory.".format(folder_2))
+                os.mkdir(folder_2)
+
+            # Check directories exist - labels
+            if not(os.path.isdir(labels_folder_name)):
+                print("Created {} directory.".format(labels_folder_name))
+                os.mkdir(labels_folder_name)
+
+            # Save graph to respective directory
+            nx.write_gpickle(G_1, os.path.join(
+                folder_1, str(i) + '_' + protein_1 + ".gpickle"))
+
+            nx.write_gpickle(G_2, os.path.join(
+                folder_2, str(i) + '_' + protein_2 + ".gpickle"))
+
+            # Format data to save on the fly (labels)
+            labels_fn = os.path.join(labels_folder_name, 'labels.csv')
+            fieldnames = ['protein_1', 'protein_2', 'label']
+            row = {
+                'protein_1': protein_1,
+                'protein_2': protein_2,
+                'label': int(interact_label)}
+
+            # Open the file to append data to - only save new entries
+            with open(labels_fn, 'a') as fd:
+                writer = csv.DictWriter(fd, fieldnames=fieldnames)
+
+                # Open file using seperate reader, and check the rows
+                with open(labels_fn, 'r') as file1:
+                    existing_lines = [
+                        line for line in csv.reader(file1, delimiter=',')]
+                    row_check = [x for x in row.values()]
+
+                    # If header already present, don't write
+                    if fieldnames not in existing_lines:
+                        writer.writeheader()
+
+                    # If row already present, don't write
+                    if row_check not in existing_lines:
+                        writer.writerow(row)
+
+    except:
+        print('Skipping example: {}and{}'.format(protein_1, protein_2))
+        continue
