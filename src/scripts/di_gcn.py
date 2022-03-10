@@ -352,46 +352,54 @@ netsurf_d = dict(zip(seq_names, netsurf))
 # Load anndata object
 anndata = pd.read_csv(anndata_path, sep='\t')
 
-# Itstantiate graph collections
-graphs_1 = []
-graphs_2 = []
-
 
 ######## RUN PIPELINE ########
 ##############################
 
 
+# Itstantiate graph collections
+graphs_1 = []
+graphs_2 = []
+graph_labels = []
+
 # Generate all graphs
 rows, cols = np.shape(anndata)
-for i in range(rows):
+for i in tqdm(range(rows)):
     # Grab protein names
     protein_1, protein_2 = anndata.loc[i, ['STRING_ID1', 'STRING_ID2']]
 
     # Pull out path for each protein
     p1_path, p2_path = netsurf_d[protein_1], netsurf_d[protein_2]
+
+    # Get raw protein data
     p1_x, p2_x = pd.read_csv(p1_path), pd.read_csv(p2_path)
     seq_1, seq_2 = "".join(p1_x['seq'].values), "".join(p2_x['seq'].values)
 
-    # Extract alpha-fold structure based on protein name
+    # Get interaction label
+    interact_meta = anndata[(anndata['STRING_ID1'] == protein_1) & (
+        anndata['STRING_ID2'] == protein_2)]
+    interact_stataus = interact_meta['benchmark_status'].values
+    interact_label = 1 if interact_stataus == 'P' else 0
+    graph_labels.append(interact_label)
+
+    # Extract alpha-fold structure based on protein names
     residues_1 = generate_alpha_fold_structures(string_to_af, protein_1)
     residues_2 = generate_alpha_fold_structures(string_to_af, protein_2)
 
-    # Subset for proximitty matrix
+    # Generate proximitty matrices
     prox_1 = generate_proximity_matrix(
         residues_1, residues_1, angstroms=10, show=False)
     prox_2 = generate_proximity_matrix(
         residues_2, residues_2, angstroms=10, show=False)
 
-    # Remove self-loops
+    # Remove self-loops from graphs
     G_1 = generate_graphs(prox_1, show=False, self_loops=False)
     G_2 = generate_graphs(prox_2, show=False, self_loops=False)
 
-    # Populate node features
+    # Populate each node with netsurfp features
     G_1 = populate_graph_features(G_1, x_net_surf=p1_x)
     G_2 = populate_graph_features(G_2, x_net_surf=p2_x)
 
     # Append graphs
     graphs_1.append(G_1)
     graphs_2.append(G_2)
-
-    break
