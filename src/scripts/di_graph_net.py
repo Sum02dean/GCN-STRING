@@ -109,7 +109,7 @@ class GCN(torch.nn.Module):
         x_2 = self.g2_prelu_2(x_2)
         ################
 
-        #### di_grap ####
+        #### di_graph ####
         x = torch.concat((x_1, x_2), dim=0)
         x = self.cat_batch_norm(x)
         x = self.cat_linear(x)
