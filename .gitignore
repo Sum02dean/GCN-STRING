@@ -132,3 +132,6 @@ dmypy.json
 # Directories
 src/scripts/graph_data/
 src/scripts/graph_labels/
+src/scripts/di_graphs_1/
+src/scripts/di_graphs_2/
+src/scripts/di_graph_labels/
