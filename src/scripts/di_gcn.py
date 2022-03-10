@@ -14,6 +14,8 @@ from Bio.PDB.Residue import Residue
 from multiprocessing import Pool
 from Bio.PDB import PDBParser
 import networkx as nx
+import pickle
+import csv
 
 
 class SloppyStructureBuilder(Bio.PDB.StructureBuilder.StructureBuilder):
@@ -337,7 +339,7 @@ string_to_af = "/mnt/mnemo6/damian/STRING_derived_v11.5/alphafold/mapping/83333.
 string_to_pdb = '/mnt/mnemo6/damian/STRING_derived_v11.5/pdb/pdb2string.blastp.best_score.tsv'
 pdb_files_for_PDB = '/mnt/mnemo6/damian/STRING_freeze_v11.5/pdb/data/biounit/coordinates/divided/'
 
-# Netsurf outputs
+# Raw outputs
 netsurf = glob.glob(os.path.join(netsurf_path, "*.csv"))
 sequences = glob.glob(os.path.join(sequence_path, "*.csv"))
 
@@ -362,17 +364,15 @@ SAVE = True
 
 # Generate all graphs
 rows, cols = np.shape(anndata)
-for i in tqdm(range(rows)):
+for i in tqdm(0, range(rows)):
 
     try:
         # Grab protein names
         protein_1, protein_2 = anndata.loc[i, ['STRING_ID1', 'STRING_ID2']]
         di_graph_name = "and".join([protein_1, protein_2])
 
-        # Pull out path for each protein
+        # # Get raw protein data
         p1_path, p2_path = netsurf_d[protein_1], netsurf_d[protein_2]
-
-        # Get raw protein data
         p1_x, p2_x = pd.read_csv(p1_path), pd.read_csv(p2_path)
         seq_1, seq_2 = "".join(p1_x['seq'].values), "".join(p2_x['seq'].values)
 
