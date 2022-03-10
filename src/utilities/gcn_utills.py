@@ -10,16 +10,17 @@ import csv
 import matplotlib.pyplot as plt
 import copy
 import glob
-import os
 import shutil
 import Bio.PDB
 import Bio.PDB.StructureBuilder
 from Bio.PDB.Residue import Residue
 from multiprocessing import Pool
 from Bio.PDB import PDBParser
+import torch
 from tqdm import tqdm
 from numpy.linalg import matrix_rank
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 
 class FrequencyCoupler:
     """Class for computing and visualizing the freuqency matrix of top-n DCA
@@ -245,6 +246,7 @@ class FrequencyCoupler:
         file_name = self.msa_file_path.split('/')[-1]
         f = file_name.replace(".fasta", "")
         return f
+
 
 class DcaLab:
     def __init__(self, anndata_path):
@@ -534,6 +536,7 @@ class DcaLab:
         msa_synthesizer = MsaSynthesizer()
         return msa_synthesizer
 
+
 class FileParser:
     """File parser to grab co-evolution, entropy and annotation data for protein pairs.
         This is a class designed to parse the blastp file directory found in Taos remote
@@ -602,6 +605,7 @@ class FileParser:
 
         for f in file_list:
             shutil.move(f, dest_dir)
+
 
 class GraphMaker:
     """
@@ -750,11 +754,11 @@ class GraphMaker:
         # Structure 1
         sloppyio_1 = SloppyPDBIO()
         sloppyio_1.set_structure(protein_1)
-        
+
         # Structure 2
         sloppyio_2 = SloppyPDBIO()
         sloppyio_2.set_structure(protein_2)
-        
+
         # (Optional) save the sloppyIO files
         # sloppyio_1.save("sloppyio_1.pdb")
         # sloppyio_2.save("sloppyio_2.pdb")
@@ -1109,6 +1113,7 @@ class GraphMaker:
                 # 4. Generate proximity adjacency matrices
                 am_1 = self.generate_proximity_matrix(
                     seq_1=residue_1, seq_2=residue_1, angstroms=10, show=show)
+
                 am_2 = self.generate_proximity_matrix(
                     seq_1=residue_2, seq_2=residue_2, angstroms=10, show=show)
 
@@ -1162,7 +1167,7 @@ class GraphMaker:
                     # Create it
                     os.makedirs(graph_folder_name)
                     print("{} directory created.".format(graph_folder_name))
-                
+
                 labels_folder_name = 'graph_labels'
                 isExist = os.path.exists(labels_folder_name)
                 if not isExist:
@@ -1208,6 +1213,7 @@ class GraphMaker:
                 print(e)
                 pass
         return graphs, labels
+
 
 class MsaSynthesizer:
     """
@@ -1460,6 +1466,7 @@ class MsaSynthesizer:
         alignment_msa = self.convert_msa_to_alignment(alpha_corr_msa)
         return alignment_msa
 
+
 class ProteinParser:
     def __init__(self, anndata_path, paired_msa_path):
 
@@ -1567,6 +1574,7 @@ class ProteinParser:
         p2 = "".join(msa.iloc[flanks[1]].values)
         return p1, p2
 
+
 class SloppyStructureBuilder(Bio.PDB.StructureBuilder.StructureBuilder):
     """Cope with resSeq < 10,000 limitation by just incrementing internally.
 
@@ -1637,6 +1645,7 @@ class SloppyStructureBuilder(Bio.PDB.StructureBuilder.StructureBuilder):
         self.chain.add(residue)
         self.residue = residue
 
+
 class SloppyPDBIO(Bio.PDB.PDBIO):
     """PDBIO class that can deal with large pdb files as used in MD simulations
 
@@ -1701,6 +1710,68 @@ class SloppyPDBIO(Bio.PDB.PDBIO):
         )
         return self._ATOM_FORMAT_STRING % args
 
+
+class GCN(torch.nn.Module):
+    def __init__(self, hidden_channels=64):
+        super(GCN, self).__init__()
+
+        # Parameters
+        self.num_node_features = 16
+        self.num_classes = 1
+        self.hidden_channels = hidden_channels
+
+        # Layers (consider using class SAGEConv instead)
+        self.conv1 = GCNConv(self.num_node_features, self.hidden_channels)
+        self.conv2 = GCNConv(self.hidden_channels, self.hidden_channels)
+        self.linear_1 = Linear(self.hidden_channels, self.hidden_channels)
+        self.linear_2 = Linear(self.hidden_channels, self.num_classes)
+
+        # Paramteric RelU
+        self.prelu_1 = torch.nn.PReLU()
+        self.prelu_2 = torch.nn.PReLU()
+        self.prelu_3 = torch.nn.PReLU()
+        self.prelu_4 = torch.nn.PReLU()
+
+        # Regularization
+        self.batch_norm_1 = torch.nn.BatchNorm1d(
+            num_features=self.hidden_channels, track_running_stats=False, momentum=None)
+
+        self.batch_norm_2 = torch.nn.BatchNorm1d(
+            num_features=self.hidden_channels, track_running_stats=False, momentum=None)
+
+        self.batch_norm_3 = torch.nn.BatchNorm1d(
+            num_features=self.hidden_channels, track_running_stats=False, momentum=None)
+
+        self.batch_norm_4 = torch.nn.BatchNorm1d(
+            num_features=self.num_classes, track_running_stats=False, momentum=None)
+
+    def forward(self, x, edge_index, batch):
+
+        # 1.Conv block 1
+        x = self.conv1(x, edge_index)
+        x = self.batch_norm_1(x)
+        x = self.prelu_1(x)
+
+        # Conv block 2
+        x = self.conv2(x, edge_index)
+        x = self.batch_norm_2(x)
+        x = self.prelu_2(x)
+
+        # Pool data across the rows
+        x = global_max_pool(x, batch)  # --> [batch_size, hidden_channels]
+
+        # 3. Linearization
+        x = self.linear_1(x)
+        x = self.batch_norm_3(x)
+        x = self.prelu_3(x)
+
+        # 4. Logic outputs
+        x = self.linear_2(x)
+        x = self.batch_norm_4(x)
+        x = self.prelu_4(x)
+        return x
+
+
 def get_structure(pdbfile, pdbid="system"):
 
     # convenience functions
@@ -1709,6 +1780,7 @@ def get_structure(pdbfile, pdbid="system"):
     )
 
     return sloppyparser.get_structure(pdbid, pdbfile)
+
 
 def get_dca_stats(df):
     """This function will iterate through every row of a pandas dataframe and return the DCA and frequency matrix stats.
@@ -1768,6 +1840,7 @@ def get_dca_stats(df):
                                     'variance': frequency_variances, 'frequencies': flat_freqs})
 
     return stats
+
 
 def get_dca_stats_with_figs(df, save_fig=True):
     """This function will iterate through every row of a pandas dataframe and return the DCA and frequency matrix stats.
@@ -1833,6 +1906,7 @@ def get_dca_stats_with_figs(df, save_fig=True):
 
     return stats
 
+
 def parallelize_dataframe(df, func, n_cores=20):
     """This script takes a function 'func' and applies it to a n_obs/n_cores chunks 
        of a pandas DataFrame, it was purpose built for the func get_dca_stats.py.
@@ -1859,3 +1933,42 @@ def parallelize_dataframe(df, func, n_cores=20):
     p.close()
     p.join()
     return y
+
+
+def get_label(file, labels):
+    pair_1 = file.split('/')[-1]
+    pair_1, pair_2 = pair_1.split("and")
+    pair_1 = pair_1.replace(".gpickle", "")
+    pair_2 = pair_2.replace(".gpickle", "")
+    l = int(labels.loc[(labels.protein_1 == pair_1)
+            & (labels.protein_2 == pair_2)].label)
+    return file, l
+
+
+def read_graphs(file_set):
+    g_list = []
+    for i, file in enumerate(file_set):
+        G = nx.read_gpickle(file)
+        g_list.append(G)
+    return g_list
+
+
+def format_graphs(graphs, label=1):
+    graph_list = []
+    # Convert into pytorch geoetric dataset: Positive
+    for i, x in enumerate(tqdm(graphs)):
+        F = nx.convert_node_labels_to_integers(x)
+        for (n1, n2, d) in F.edges(data=True):
+            d.clear()
+        data = convert.from_networkx(F, group_edge_attrs=None)
+        data.y = torch.FloatTensor([label])
+        graph_list.append(data)
+    return graph_list
+
+
+def binary_acc(y_pred, y_test):
+    y_pred_tag = torch.round(torch.sigmoid(y_pred))
+    correct_results_sum = (y_pred_tag == y_test).sum().float()
+    acc = correct_results_sum / y_test.shape[0]
+    acc = torch.round(acc * 100)
+    return acc
