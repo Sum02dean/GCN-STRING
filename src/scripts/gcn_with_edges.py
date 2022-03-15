@@ -24,6 +24,8 @@ from torch_geometric.nn import global_mean_pool, global_max_pool
 from sklearn.metrics import roc_curve, auc
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import label_binarize
+from sklearn.preprocessing import MinMaxScaler
+
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.metrics import roc_auc_score
 from utilities.gcn_utills import GraphMaker
@@ -877,8 +879,16 @@ G_1, G_2 = populate_graph_features(G_1, G_2, x_net_surf_1, x_net_surf_2)
 U = link_graphs(G_1, G_2, bridges, show=False)
 
 INSPECT = True
+
+# Normalize dca values
+ss = MinMaxScaler()
+dca = np.array(dca)
+dca_scaled = ss.fit_transform(dca.reshape(-1, 1))
+dca_scaled
+
 # make data into a dataframe
-df = pd.DataFrame({'pos_1': pos_1, 'pos_2': pos_2, 'dca': dca})
+df = pd.DataFrame({'pos_1': pos_1, 'pos_2': pos_2, 'dca': dca_final})
+display(df)
 
 for edge in U.edges:
     if ('a' in edge[0]) and ('b' in edge[1]):
@@ -911,6 +921,7 @@ for edge in U.edges:
         # Set peptides edge type to 1
         attrs = {(edge[0], edge[1]): {"peptide": 1.0}}
         nx.set_edge_attributes(U, attrs)
+
 
 for edge in U.edges:
     if ('a' in edge[0]) and ('b' in edge[1]):
