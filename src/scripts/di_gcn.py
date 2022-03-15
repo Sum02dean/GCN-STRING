@@ -364,7 +364,7 @@ SAVE = True
 
 # Generate all graphs
 rows, cols = np.shape(anndata)
-for i in tqdm(range(3716, rows)):
+for i in tqdm(range(0, rows)):
 
     try:
         # Grab protein names

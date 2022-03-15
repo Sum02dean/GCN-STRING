@@ -1921,15 +1921,15 @@ def parallelize_dataframe(df, func, n_cores=20):
     :rtype: pandas DataFrame
     """
 
-    # Split the pandas DataFrame into n=n_cores jobs
+    # Split the pandas DataFrame into n jobs
     df_split = np.array_split(df, n_cores)
     p = Pool(n_cores)
 
-    # Aggreate the outputs of the parallel pool as df
+    # Aggregate the outputs of the parallel pool as df
     y = pd.concat(p.map(func, df_split))
     y.reset_index(inplace=True, drop=True)
 
-    # Clse the process
+    # Close the process
     p.close()
     p.join()
     return y
