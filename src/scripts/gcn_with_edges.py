@@ -1,7 +1,7 @@
 import os
 import sys
 sys.path.append("../")
-from utilities.gcn_utills import *
+from utilities.gcn_utills import SloppyPDBIO, SloppyStructureBuilder
 import matplotlib.pyplot as plt
 import numpy as np
 import networkx as nx
@@ -25,9 +25,9 @@ class GraphMaker:
         self.D = {}
 
     def collect_data(self, x):
-        """Call as a lambda function on each row of a pandas data frame.
-        Remeber to instantaite D = {} as as a global var in the main script.
-
+        """Call as a lambda function on each row of a pandas dataframe.
+        Remeber to instantaite D={} as as a global var in the main script.
+        
         :param x: each row of a pandas.core.DataFrame
         :type x: list
         """
@@ -65,13 +65,14 @@ class GraphMaker:
         :param df: Tao's new data
         :type df: pandas.core.DataFrame
 
-        :return: There is not return type. Global D (dict) will be modified.
+        :return: There is no return type. Global D (dict) will be modified.
         :rtype: None
         """
         _ = df.apply(lambda x: self.collect_data(x), axis=1)
         return None
 
     def get_position_wise_df(self, x, protein_1, protein_2):
+      """Generates an inter protein dca score dictionary."""
 
         # Intialise D dict
         _ = self.extract_data(x, )
@@ -85,10 +86,11 @@ class GraphMaker:
         dca_raw = protein_pair['dca']
 
         # Scale DCA values
-        dca = GM.process_dca(dca_raw, max_value=1)
+        dca = self.process_dca(dca_raw, max_value=1)
         dca_bridges = list(zip(pos_1, pos_2))
         l = list(zip(pos_1, dca))
 
+        # Populate the dictionary
         for pos, score in l:
             if pos not in dca_dict.keys():
                 dca_dict[pos] = [score]
@@ -100,19 +102,24 @@ class GraphMaker:
         for k, v in dca_dict.items():
             dca_dict[k] = max(v)
 
+        # Get residue_1 and rediue_2, and their associated DCA score
         df = pd.DataFrame({'pos_1': pos_1, 'pos_2': pos_2, 'dca': dca})
 
         return df, dca, dca_raw, dca_bridges
 
     def generate_alpha_fold_structures(self, string_to_af, pair_1, pair_2):
         """Queries alphs-fold predictions for a given protein sequnece and returns
-         alpha-fld predicted structures.
+         alpha-fold predicted structure for each protein in the pair.
+
         :param string_to_af: maping path between string-alphaFold
         :type string_to_af: string
+
         :param pair_1: protein name 1
         :type pair_1: string
+        
         :param pair_2: protein name 2
         :type pair_2: string
+        
         :return: alphaFold structures for each protein
         :rtype: objects
         """
@@ -152,8 +159,10 @@ class GraphMaker:
         """Calculates the euclidean distance between two residues in 3D space.
         :param residue_one: reference residue
         :type residue_one:  object
+        
         :param residue_two: target residue
         :type residue_two: object
+        
         :return: sqaured euclidean distance
         :rtype: float
         """
@@ -163,10 +172,13 @@ class GraphMaker:
 
     def calculate_dist_matrix(self, seq_1, seq_2):
         """Calculates the distance matrix for all pairwise residues
+
         :param seq_1: protein sequence 1
         :type seq_1: string
+        
         :param seq_2: protein sequence 2
         :type seq_2: string
+        
         :return: an nd array which encodes pairwise residue distances
         :rtype: np.array
         """
@@ -182,11 +194,14 @@ class GraphMaker:
         """Creates an adacency matrix for points within n angstroms of each other
         :param seq_1: protein sequence 1
         :type seq_1: string
+
         :param seq_2: protein sequence 2
         :type seq_2: sting
+        
         :param angstroms: max distance threshold , defaults to 10
         :type angstroms: int, optional
         :param show: to plot matrix, defaults to False
+        
         :type show: bool, optional
         :return: a proximity matrix for points considered less than n angstroms apart
         :rtype: np.array
@@ -210,12 +225,15 @@ class GraphMaker:
 
     def generate_graphs(self, adjacency_matrix_1, adjacency_matrix_2, show=False):
         """Generates the initial graphs from provided adjacency matrices.
+        
         :param adjacency_matrix_1: proximity matrix for protein 1
         :type adjacency_matrix_1: np.array
+        
         :param adjacency_matrix_2: proximity matrix for protein 2
         :type adjacency_matrix_2: np.array
         :param show: plot graphs, defaults to False
         :type show: bool, optional
+        
         :return: returns networkX graphs corrresponding to each adjacency matrix
         :rtype: tuple of networkX objects
         """
@@ -285,18 +303,25 @@ class GraphMaker:
 
     def link_graphs(self, graph_1, graph_2, dca_bridges, show=False):
         """Linkes the two protein graphs on their top 'n' DCA connections (bridges)
+
         :param graph_1: graph for protein 1
         :type graph_1: networkX graph object
+        
         :param graph_2: graph for protein 2
         :type graph_2: networkX graph object
+        
         :param dca_bridges: dca connections
         :type dca_bridges: list
+        
         :param msa_coder_1: msa-seq coder for protein 1
         :type msa_coder_1: dict
+        
         :param msa_coder_2: sa-seq coder for protein 2
         :type msa_coder_2: dict
+        
         :param show: to plot graphs, defaults to False
         :type show: bool, optional
+        
         :return: Union of the two protein graphs    
         :rtype: networkX graph object
         """
@@ -307,8 +332,8 @@ class GraphMaker:
         for (b1, b2) in dca_bridges:
             try:
                 U.add_edge('a-' + str(b1),
-                           'b-' + str(b2),
-                           color='red')
+                           'b-' + str(b2)
+                           )
             except Exception as e:
                 print("something went wrong during graph-linking.")
                 print(e)
@@ -337,8 +362,26 @@ class GraphMaker:
         return U
 
     def populate_edge_dca(self, graph, x, protein_1, protein_2, feature_name='dca'):
+        """Populate the edge with dca score values
 
-        # make data into a dataframe
+        :param graph: network x graph
+        :type graph: nx object
+        :param x: Tao's DCA data    
+        :type x: pandas.core.DataFrame
+        
+        :param protein_1: protein 1 name    
+        :type protein_1: string 
+        :param protein_2: protein 2 name    
+        :type protein_2: str
+
+        :param feature_name: _description_, defaults to 'dca'
+        :type feature_name: str, optional
+        
+        :return: nx graph with dca scores as edge feature
+        :rtype: _type_
+        """
+
+        # Make data into a dataframe
         df, _, _, _ = self.get_position_wise_df(x, protein_1, protein_2)
 
         for edge in U.edges:
@@ -348,11 +391,11 @@ class GraphMaker:
                 e_1 = int(edge[0].split('-')[-1])
                 e_2 = int(edge[1].split('-')[-1])
 
-                # Extract and join on the DCA scores
+                # Extract DCA scores pertaining to the edges e1 & e2
                 dca_score = df[(df['pos_1'] == e_1) & (
                     df['pos_2'] == e_2)]['dca'].values
 
-                # Set dca edge type to max dca score
+                # Set dca edge type to dca score
                 attrs = {(edge[0], edge[1]): {feature_name: float(dca_score)}}
                 nx.set_edge_attributes(graph, attrs)
 
@@ -363,8 +406,8 @@ class GraphMaker:
 
         return graph
 
-    def populate_edge_proximity(self, graph, edge_dict):
-        """Populate none dca edges with proximity values
+    def populate_edge_proximity(self, graph, edge_dict, feature_name='proximity'):
+        """Populate none dca edges with inverse proximity values
 
         :param graph: Union graph of G1 and G2
         :type graph: nx object
@@ -375,34 +418,52 @@ class GraphMaker:
         :return: graph U containing edge features
         :rtype: networkx graph
         """
-        name = 'proximity'
+        
         for _, edge in enumerate(graph.edges):
             if edge[0][0] == edge[1][0]:
-                attrs = {(edge[0], edge[1]): {name: float(edge_dict[edge])}}
+                attrs = {(edge[0], edge[1]): {feature_name: float(edge_dict[edge])}}
             else:
-                attrs = {(edge[0], edge[1]): {name: 0.0}}
+                attrs = {(edge[0], edge[1]): {feature_name: 0.0}}
             nx.set_edge_attributes(graph, attrs)
         return graph
 
     def process_proximity(self, x, max_value=10, mask=None, invert=True):
+        """Process the proximity values via max value division and invertion (1-value)
+
+        :param x: proximity scores
+        :type x: list of ints
+
+        :param max_value: the maximum value in the lest, defaults to 10
+        :type max_value: int, optional
+        
+        :param mask: to mask out any edges that connect residues > 10 angstrom, defaults to None
+        :type mask: _type_, optional
+        
+        :param invert: if true, a score of 0.x becomes 1-0.x, defaults to True
+        :type invert: bool, optional
+
+        :return: generates processed proximity scores   
+        :rtype: np.array
+        """
 
         # Scale proximity values to max_value
         x = copy.deepcopy(x)
         x_array = np.array(x) / max_value
 
-        # To masl background edges (geater than 10 angstroms)
+        # To mask background edges (geater than 10 angstroms)
         if mask is None:
             mask = np.ones(np.shape(x))
 
         # Apply mask
         x_array = mask * x_array
 
-        # Invert the small scores should become large
+        # Invert: small scores should become large
         if invert:
             x_array = 1 - x_array
         return x_array
 
     def get_proximity_dict(self, x, graph_name='a'):
+        """Converts proximity scores into a dictionary"""
         row, col = x.shape
         edge_d = {}
         for r in range(row):
@@ -415,6 +476,17 @@ class GraphMaker:
         return edge_d
 
     def process_dca(self, x, max_value=1):
+        """Scales DCA values
+
+        :param x: DCA scores
+        :type x: list
+
+        :param max_value: maximum value to clip DCA scores to, defaults to 1
+        :type max_value: int, optional
+        
+        :return: clipped values
+        :rtype: np.array
+        """
         # Scale DCA values
         x = copy.deepcopy(x)
         x_array = np.array(x)
@@ -474,114 +546,115 @@ class GraphMaker:
                     writer.writerow(row)
 
 
-# Path to new data
-root = '/mnt/mnemo6/tao/PPI_Coevolution/CoEvo_data_STRING11.5/511145_EggNOGmaxLevel1224_eggNOGfilteredData/STRINGPhyBalancePhyla_Benchmark/'
-meta = 'fixedNegVSposRratio_metadata.csv'
-phyla = 'fixedNegVSposRratio_WithPhylaintegration_InSubjectOriPos_listDict_allPPs.csv'
-no_phyla = 'fixedNegVSposRratio_WithoutPhylaintegration_InSubjectOriPos_listDict_allPPs.csv'
+if __name__ == '__main__':
+    # Path to new data
+    root = '/mnt/mnemo6/tao/PPI_Coevolution/CoEvo_data_STRING11.5/511145_EggNOGmaxLevel1224_eggNOGfilteredData/STRINGPhyBalancePhyla_Benchmark/'
+    meta = 'fixedNegVSposRratio_metadata.csv'
+    phyla = 'fixedNegVSposRratio_WithPhylaintegration_InSubjectOriPos_listDict_allPPs.csv'
+    no_phyla = 'fixedNegVSposRratio_WithoutPhylaintegration_InSubjectOriPos_listDict_allPPs.csv'
 
-# Annotation file
-anndata_path = ('/mnt/mnemo6/tao/PPI_Coevolution/CoEvo_data_STRING11.5/'
-                '511145_EggNOGmaxLevel1224_eggNOGfilteredData/STRINPhyPPI_Benchmark/allPPI_allInfo_frame.csv')
-# Netsurf data
-netsurf_path = "/mnt/mnemo6/tao/PPI_Coevolution/STRING_data_11.5/511145_netsurfp2_output/"
+    # Annotation file
+    anndata_path = ('/mnt/mnemo6/tao/PPI_Coevolution/CoEvo_data_STRING11.5/'
+                    '511145_EggNOGmaxLevel1224_eggNOGfilteredData/STRINPhyPPI_Benchmark/allPPI_allInfo_frame.csv')
+    # Netsurf data
+    netsurf_path = "/mnt/mnemo6/tao/PPI_Coevolution/STRING_data_11.5/511145_netsurfp2_output/"
 
-# ALPHA-Fold paths
-string_to_af = "/mnt/mnemo6/damian/STRING_derived_v11.5/alphafold/mapping/83333.511145.tsv"
-string_to_pdb = '/mnt/mnemo6/damian/STRING_derived_v11.5/pdb/pdb2string.blastp.best_score.tsv'
-pdb_files_for_PDB = '/mnt/mnemo6/damian/STRING_freeze_v11.5/pdb/data/biounit/coordinates/divided/'
+    # ALPHA-Fold paths
+    string_to_af = "/mnt/mnemo6/damian/STRING_derived_v11.5/alphafold/mapping/83333.511145.tsv"
+    string_to_pdb = '/mnt/mnemo6/damian/STRING_derived_v11.5/pdb/pdb2string.blastp.best_score.tsv'
+    pdb_files_for_PDB = '/mnt/mnemo6/damian/STRING_freeze_v11.5/pdb/data/biounit/coordinates/divided/'
 
-# Load data
-new_data = pd.read_csv(os.path.join(root, no_phyla), sep='\t', header=None)
-phyla_data = pd.read_csv(os.path.join(root, phyla), sep='\t', header=None)
-meta_data = pd.read_csv(os.path.join(root, meta), sep='\t', header=0)
+    # Load data
+    new_data = pd.read_csv(os.path.join(root, no_phyla), sep='\t', header=None)
+    phyla_data = pd.read_csv(os.path.join(root, phyla), sep='\t', header=None)
+    meta_data = pd.read_csv(os.path.join(root, meta), sep='\t', header=0)
 
-# Netsurf outputs
-netsurf = glob.glob(os.path.join(netsurf_path, "*.csv"))
-netsurf.sort()
+    # Netsurf outputs
+    netsurf = glob.glob(os.path.join(netsurf_path, "*.csv"))
+    netsurf.sort()
 
-# Generate map between protein names and netsurfp file paths
-seq_names = [x.split("/")[-1].replace(".csv", "") for x in netsurf]
-netsurf_d = dict(zip(seq_names, netsurf))
+    # Generate map between protein names and netsurfp file paths
+    seq_names = [x.split("/")[-1].replace(".csv", "") for x in netsurf]
+    netsurf_d = dict(zip(seq_names, netsurf))
 
-# Load meta
-meta_data = pd.read_csv(os.path.join(root, meta), sep='\t')
+    # Load metadata
+    meta_data = pd.read_csv(os.path.join(root, meta), sep='\t')
 
-# Instantiate the graph maker class
-GM = GraphMaker(anndata_path=os.path.join(root, meta))
-anndata = GM.anndata
-rows, cols = np.shape(anndata)
+    # Instantiate the graph maker class
+    GM = GraphMaker(anndata_path=os.path.join(root, meta))
+    anndata = GM.anndata
+    rows, cols = np.shape(anndata)
 
-# Loop over all instances in the anndata file
-for i in tqdm(range(rows)):
-    try:
-        obs = anndata.iloc[i, :]
-        pair_1 = obs['STRING_ID1']
-        pair_2 = obs['STRING_ID2']
-        label = obs['benchmark_status']
+    # Loop over all instances in the anndata (annotation data) file
+    for i in tqdm(range(rows)):
+        try:
+            obs = anndata.iloc[i, :]
+            pair_1 = obs['STRING_ID1']
+            pair_2 = obs['STRING_ID2']
+            label = obs['benchmark_status']
 
-        # Get alpha-fold structures
-        residue_1, residue_2 = GM.generate_alpha_fold_structures(
-            string_to_af, pair_1, pair_2)
+            # Get alpha-fold structures
+            residue_1, residue_2 = GM.generate_alpha_fold_structures(
+                string_to_af, pair_1, pair_2)
 
-        # Get proximity matrices
-        proximity_mask_1, dist_map_1 = GM.generate_proximity_matrix(
-            seq_1=residue_1, seq_2=residue_1,
-            angstroms=10, show=False)
+            # Get proximity matrices
+            proximity_mask_1, dist_map_1 = GM.generate_proximity_matrix(
+                seq_1=residue_1, seq_2=residue_1,
+                angstroms=10, show=False)
 
-        proximity_mask_2, dist_map_2 = GM.generate_proximity_matrix(
-            seq_1=residue_2, seq_2=residue_2,
-            angstroms=10, show=False)
+            proximity_mask_2, dist_map_2 = GM.generate_proximity_matrix(
+                seq_1=residue_2, seq_2=residue_2,
+                angstroms=10, show=False)
 
-        # Generate graphs
-        G_1, G_2 = GM.generate_graphs(
-            adjacency_matrix_1=proximity_mask_1,
-            adjacency_matrix_2=proximity_mask_2)
+            # Generate graphs
+            G_1, G_2 = GM.generate_graphs(
+                adjacency_matrix_1=proximity_mask_1,
+                adjacency_matrix_2=proximity_mask_2)
 
-        # Populate node attributes with netsurfp features
-        G_1, G_2 = GM.populate_graph_features(
-            graph_1=G_1, graph_2=G_2,
-            protein_1=pair_1, protein_2=pair_2,
-            netsurf_path_dict=netsurf_d)
+            # Populate node attributes with netsurfp features
+            G_1, G_2 = GM.populate_graph_features(
+                graph_1=G_1, graph_2=G_2,
+                protein_1=pair_1, protein_2=pair_2,
+                netsurf_path_dict=netsurf_d)
 
-        # Get DCA bridge connections
-        df, dca, dca_raw, dca_bridges = GM.get_position_wise_df(
-            x=new_data, protein_1=pair_1,
-            protein_2=pair_2)
+            # Get DCA bridge connections
+            df, dca, dca_raw, dca_bridges = GM.get_position_wise_df(
+                x=new_data, protein_1=pair_1,
+                protein_2=pair_2)
 
-        # Make union of the graphs on dca brides
-        U = GM.link_graphs(
-            graph_1=G_1, graph_2=G_2,
-            dca_bridges=dca_bridges, show=False)
+            # Make union of the graphs on dca brides
+            U = GM.link_graphs(
+                graph_1=G_1, graph_2=G_2,
+                dca_bridges=dca_bridges, show=False)
 
-        # Populate edge attributes
-        U = GM.populate_edge_dca(
-            graph=U, x=new_data,
-            protein_1=pair_1, protein_2=pair_2,
-            feature_name='dca')
+            # Populate edge attributes
+            U = GM.populate_edge_dca(
+                graph=U, x=new_data,
+                protein_1=pair_1, protein_2=pair_2,
+                feature_name='dca')
 
-        # Invert distance matrices
-        inv_dit_map_1 = GM.process_proximity(
-            x=dist_map_1, max_value=10,
-            mask=proximity_mask_1, invert=True)
+            # Invert distance matrices
+            inv_dit_map_1 = GM.process_proximity(
+                x=dist_map_1, max_value=10,
+                mask=proximity_mask_1, invert=True)
 
-        inv_dit_map_2 = GM.process_proximity(
-            x=dist_map_2, max_value=10,
-            mask=proximity_mask_2, invert=True)
+            inv_dit_map_2 = GM.process_proximity(
+                x=dist_map_2, max_value=10,
+                mask=proximity_mask_2, invert=True)
 
-        # Generate proximity matrices
-        d_1 = GM.get_proximity_dict(x=inv_dit_map_1, graph_name='a')
-        d_2 = GM.get_proximity_dict(x=inv_dit_map_2, graph_name='b')
+            # Generate proximity matrices
+            d_1 = GM.get_proximity_dict(x=inv_dit_map_1, graph_name='a')
+            d_2 = GM.get_proximity_dict(x=inv_dit_map_2, graph_name='b')
 
-        # Combine the two dicts
-        d_1.update(d_2)
+            # Combine the two dicts
+            d_1.update(d_2)
 
-        # Finally populate the prixmity edge features
-        U = GM.populate_edge_proximity(U, d_1)
+            # Finally populate the prixmity edge features
+            U = GM.populate_edge_proximity(U, d_1)
 
-        # Save the graph to file
-        GM.save_graph_data(graph=U, protein_1=pair_1,
-                           protein_2=pair_2, label=label)
-    except:
-        print('Skipping... something went wrong.')
-        pass
+            # Save the graph to file
+            GM.save_graph_data(graph=U, protein_1=pair_1,
+                            protein_2=pair_2, label=label)
+        except:
+            print('Skipping... something went wrong.')
+            pass

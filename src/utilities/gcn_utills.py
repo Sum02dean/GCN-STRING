@@ -32,6 +32,7 @@ class FrequencyCoupler:
         self.cache_dir_path = cache_dir_path
         self.msa_file_path = msa_file_path
         self.anndata = pd.read_csv(anndata_path, sep='\t')
+        # Sorted based on QSAR properties
         self.tokens = ['C', 'M', 'W',
                        'F', 'Y', 'H',
                        'P', 'V', 'S',
@@ -39,7 +40,7 @@ class FrequencyCoupler:
                        'N', 'Q', 'I',
                        'L', 'R', 'K',
                        'A', 'G', 'X', '-']
-        # Sorted based on QSAR properties
+        
 
     def get_pair_id(self, fn):
         fn = fn.replace('.fasta', '')
