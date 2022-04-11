@@ -9,8 +9,6 @@ import pandas as pd
 import csv
 import matplotlib.pyplot as plt
 import copy
-import glob
-import shutil
 import Bio.PDB
 import Bio.PDB.StructureBuilder
 from Bio.PDB.Residue import Residue
@@ -18,595 +16,7 @@ from multiprocessing import Pool
 from Bio.PDB import PDBParser
 import torch
 from tqdm import tqdm
-from numpy.linalg import matrix_rank
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-
-class FrequencyCoupler:
-    """Class for computing and visualizing the freuqency matrix of top-n DCA
-       aligned inter-protein residue pairs. This class is used to compute DCA scores on combined protein MSA .fasta files. 
-       The frequency matix can also be computed alonside a visualization.
-    """
-
-    def __init__(self, msa_file_path, anndata_path, cache_dir_path):
-        self.cache_dir_path = cache_dir_path
-        self.msa_file_path = msa_file_path
-        self.anndata = pd.read_csv(anndata_path, sep='\t')
-        # Sorted based on QSAR properties
-        self.tokens = ['C', 'M', 'W',
-                       'F', 'Y', 'H',
-                       'P', 'V', 'S',
-                       'T', 'D', 'E',
-                       'N', 'Q', 'I',
-                       'L', 'R', 'K',
-                       'A', 'G', 'X', '-']
-        
-
-    def get_pair_id(self, fn):
-        fn = fn.replace('.fasta', '')
-        sfn = fn.split('/')[-1]
-        sfn_m = sfn.split('and')
-        return sfn_m
-
-    def get_dca_scores(self, pseudocount=0.5, seqid=0.8, plen1=None):
-
-        # Get fasta name
-        fasta_name = self.msa_file_path.split('/')[-1]
-        pair_id = self.get_pair_id(self.msa_file_path)
-
-        if plen1:
-            self.plen1 = plen1
-        else:
-            plen1 = int(self.anndata.loc[(self.anndata['STRING_ID1'] == pair_id[0])
-                                         & (self.anndata['STRING_ID2'] == pair_id[1])]['len1'])
-            plen2 = int(self.anndata.loc[(self.anndata['STRING_ID1'] == pair_id[0])
-                                         & (self.anndata['STRING_ID2'] == pair_id[1])]['len2'])
-            self.plen1 = plen1
-            self.plen2 = plen2
-
-        # Explore all files in the cache directory
-        files = glob.glob(os.path.join(self.cache_dir_path, '*'))
-        f = os.path.join(self.cache_dir_path,
-                         fasta_name.replace('.fasta', '.npy'))
-
-        # Check to see if the speicific dca file is cached
-        file_identified = False
-        for fn in files:
-            if fasta_name.replace('.fasta', '.npy') in fn:
-                file_identified = True
-                self.mfdca_FN_APC = np.load(f, allow_pickle=True)
-
-        if file_identified == False:
-            # If file not in cache, compute as usual using pyDCA
-            self.mfdca_inst = meanfield_dca.MeanFieldDCA(self.msa_file_path,
-                                                         'protein',
-                                                         pseudocount=pseudocount,
-                                                         seqid=seqid)
-
-            # Compute average product corrected Frobenius norm of the couplings
-            self.mfdca_FN_APC = self.mfdca_inst.compute_sorted_FN_APC()
-
-            # Save results to cache
-            with open(f, 'wb') as fn:
-                np.save(f, self.mfdca_FN_APC)
-
-        # Get *inter* pairs
-        p1 = []
-        p2 = []
-        s = []
-        for pairs, scores in self.mfdca_FN_APC:
-            # Subtract 1 from plen1 to account for 0th indexing
-            if (pairs[0] <= plen1 - 1) and (pairs[1] > plen1 - 1):
-                p1.append(pairs[0])
-                p2.append(pairs[1])
-                s.append(scores)
-
-        # Store *inter*
-        inter_protein_pairs = np.array(list(zip(p1, p2, s)))
-
-        # Get *intra* pairs for protein A
-        p1 = []
-        p2 = []
-        s = []
-        for pairs, scores in self.mfdca_FN_APC:
-            # Subtract 1 from plen1 to account for 0th indexing
-            if (pairs[0] <= plen1 - 1) and (pairs[1] <= plen1 - 1):
-                p1.append(pairs[0])
-                p2.append(pairs[1])
-                s.append(scores)
-
-        # Store intra** A
-        intra_protein_pairs_a = np.array(list(zip(p1, p2, s)))
-
-        # Get intra** pairs for protein B
-        p1 = []
-        p2 = []
-        s = []
-        for pairs, scores in self.mfdca_FN_APC:
-            # Subtract 1 from plen1 to account for 0th indexing
-            if (pairs[0] > plen1 - 1) and (pairs[1] > plen1 - 1):
-                p1.append(pairs[0])
-                p2.append(pairs[1])
-                s.append(scores)
-
-        # Store intra** B
-        intra_protein_pairs_b = np.array(list(zip(p1, p2, s)))
-
-        # Return arrays
-        return inter_protein_pairs, intra_protein_pairs_a, intra_protein_pairs_b
-
-    def convert_msa_to_df(self):
-        """Converts a paired_msa file into a pandas DataFrame where columns represent residue postion
-           each row is the protein sequence of a multiple-sequence-alignmnt fasta file.
-
-        :return: pandas DataFrame object
-        :rtype: object
-        """
-        # Convert protein sequence into an amino acid dataframe for protein
-        bio_rec = SeqIO.parse(self.msa_file_path, "fasta")
-        seq = []
-        for _, rec in enumerate(bio_rec):
-            sequence = rec.seq
-            seq.append([x for x in sequence])
-        df = pd.DataFrame(seq)
-        return df
-
-    def get_consensus_matrix(self, threshold):
-        """Computes the consensus sequence for a multi-squence alignment.
-
-        :param threshold: the threshold value that is required to add a particular atom.
-        :type threshold: float/int
-        :return: Returns a fast consensus sequence of the alignment
-        :rtype: object
-        """
-
-        align = AlignIO.read(
-            self.msa_file_path, "fasta")
-        summary_align = AlignInfo.SummaryInfo(align)
-        consensus = summary_align.dumb_consensus(threshold)
-        self.consensus = consensus
-        return consensus
-
-    def subset_top_dca_couplings(self, top_inter_pair):
-        """Subsets the MSA to return a minimal pandas DataFrame containing only the aligned inter-protein residue with the top DCA score.
-
-        :param top_inter_pair: the residue pair (two pandas columns) with the highest DCA score(s).
-        :type top_inter_pair: double
-        :return: a pandas DataFrame with two columns corresponding to the residue pair with the highest score across the MSA.
-        :rtype: pandas DataFrame
-        """
-        msa_df = self.convert_msa_to_df()
-        top_row_a = msa_df.iloc[:, int(top_inter_pair[0])]
-        top_row_b = msa_df.iloc[:, int(top_inter_pair[1])]
-        top_pairs = pd.concat([top_row_a, top_row_b], axis=1)
-        self.top_pairs = top_pairs
-        return top_pairs
-
-    def get_frequency_matrix(self, top_msa_pair, plot=False):
-        """Generates the amino acid frequency matrix for the top DCA residues positions across MSA
-
-        :param top_msa_pair: the actual MSA residues from top-scoring pair column ids (two pandas columns).
-        :type top_inter_pair: pandas df
-        :return: inter-protein frequeny matrix for highest DCA scoring pair
-        :rtype: numpy array
-
-        """
-
-        # This is essentially the empty frequency matrix
-        couplings = {}
-        # For token A and B in pairwise map
-        for token_a in self.tokens:
-            for token_b in self.tokens:
-                keys = token_a + token_b
-                coupling_count = 0
-
-                # Record the coupling freuqency for each instance that occurs in the pairwise map
-                for pair in top_msa_pair.values:
-                    # Increment counter if the coulings are contained in the pairwise map
-                    if (pair[0] == keys[0]) and (pair[1] == keys[1]):
-                        coupling_count += 1
-                    # Generate a couplings report
-                    couplings.update({keys: coupling_count})
-
-        # Reshape and plot:
-        vals = np.array([x for x in couplings.values()])
-        coupling_matrix = np.reshape(
-            vals, (len(self.tokens), len(self.tokens)))
-
-        # Normalize the coupling matrix by MSA-depth
-        msa_depth = np.shape(top_msa_pair)[0]
-        coupling_matrix = coupling_matrix / msa_depth
-        self.coupling_matrix = coupling_matrix
-
-        # To visuliase or not
-        if plot:
-            self.visualize_frequency_matrix()
-
-        return coupling_matrix
-
-    def visualize_frequency_matrix(self):
-        """Simply visualizes the frequency matrix for the top DCA scoring inter-protein residue positions.
-        """
-
-        # Set up the matplotlib figure
-        f, ax = plt.subplots(figsize=(11, 9))
-        # Generate a custom diverging colormap
-        cmap = sns.diverging_palette(230, 20, as_cmap=True)
-        # Draw the heatmap with the mask and correct aspect ratio
-        sns.heatmap(self.coupling_matrix, mask=None, cmap=cmap, center=0,
-                    square=True, linewidths=.5, cbar_kws={"shrink": .5})
-        # Plot descriptions
-        ax.set_xticklabels(self.tokens)
-        ax.set_yticklabels(self.tokens)
-        plt.title("Resiude-wise Frequency Matrix for Top Scoring DCA Coupling")
-        plt.ylabel("Top Residue Position in Protein A")
-        plt.xlabel("Top Residue Position in Protein B")
-        return f
-
-    def get_file_name(self):
-        file_name = self.msa_file_path.split('/')[-1]
-        f = file_name.replace(".fasta", "")
-        return f
-
-
-class DcaLab:
-    def __init__(self, anndata_path):
-        """Contains the tools for calculating DCA workflows.
-
-        :param anndata_path: path to "all_info..." file.
-        :type anndata_path: string
-        """
-        # Generate annotation datafiles
-        self.anndata_path = anndata_path
-        self.anndata = pd.read_csv(anndata_path, sep='\t')
-
-    def make_triangular_dca_array(self, file_name):
-        """Converts raw DCA *.npy files into an upper triangle DCA contact map
-
-        :param file_name: DCA numpy file.
-        :type anndata_path: string
-
-        :return: The upper triangle DCA contact map
-        :rtype: numpy array
-        """
-
-        # Load in the dca score for a paired MSA
-        x = np.load(file_name, allow_pickle=True)
-        ident = file_name.replace('.npy', '')
-        ident = ident.split('/')[-1]
-        pair_id = self.get_pair_id(fn=file_name)
-
-        # Extract the protein lengths
-        plen_1 = int(self.get_anndata_field(field='len1', pair_id=pair_id))
-        plen_2 = int(self.get_anndata_field(field='len2', pair_id=pair_id))
-
-        # Re-format the dca scores into a triangular matrix
-        dca_array = np.zeros((plen_1 + plen_2, plen_1 + plen_2))
-        row_idx = np.array([int(t[0]) for t in x[:, 0]])
-        col_idx = np.array([t[1] for t in x[:, 0]])
-
-        # Populate the upper triangular matrix
-        dca_scores = np.array([t for t in x[:, 1]])
-        dca_array[row_idx, col_idx] = dca_scores
-        return dca_array
-
-    def get_string_2_pdp_list(self, dist_path):
-        """ Get the mapping of STRING-PDB files
-
-        :param dist_path: _description_
-        :type dist_path: _type_
-        :return: _description_
-        :rtype: _type_
-        """
-        # Import all String-PDB mapped files
-        with open(dist_path, 'rb') as handle:
-            str_2_pdb = pickle.load(handle)
-        return str_2_pdb
-
-    def get_pair_id(self, fn):
-        """Extracts the name of protein-A and protein-B pairs from the file_name
-
-        :param fn: The filename which contains the protein identities
-        :type fn: string
-        :return: The two protein identifiers from the file_name string
-        :rtype: list
-        """
-        # Extrac the combined protein ID
-        fn = fn.replace('.npy', '')
-        sfn = fn.split('/')[-1]
-        sfn_m = sfn.split('and')
-        return sfn_m
-
-    def get_anndata_field(self, field='', pair_id=[0, 0]):
-        """Extracts a column from a CSV file based on column name at a specific row
-
-        :param field: column name, defaults to 'STRING_ID1'
-        :type field: str, optional
-        :param pair_id: the two protein identifiers for the specific file, defaults to [0, 0]
-        :type pair_id: list, optional
-        :return: the subset data belonging to the column name given by "field"
-        :rtype: Series
-        """
-        # Subset the field from the row specified by pair_id
-        if field == '':
-            print("Please provide a valid value")
-            f = None
-        else:
-            f = self.anndata.loc[(self.anndata['STRING_ID1'] == pair_id[0])
-                                 & (self.anndata['STRING_ID2'] == pair_id[1])][field]
-        return f
-
-    def create_dictionary(self, dist_path, file_path, get_dca=True, suffix=".npy"):
-        """Returns two dictionary objects, keys are the STRING-PDB mapped pairs, keys are
-           the symmetrized contact scores, either DCA or known contacts (see get_dca param).
-
-        :param distance_path: This is the path location for known distance values
-        :type distance_path: string
-        :param file_path: This is the path to the DCA files
-        :type file_path: string
-        :param get_dca: if file_path pertains to  DCA files, defaults to True
-        :type get_dca: bool, optional
-        :param suffix: The file suffix to add onto the end of the par_id, defaults to ".npy"
-        :type suffix: str, optional
-        :return: the inter and intra protein dictionaries contaning symmetrical contact matrices
-        :rtype: [dict, dict]
-        """
-
-        # Import all String-PDB mapped files
-        str_2_pdb = self.get_string_2_pdp_list(dist_path)
-        # Instantiate empty dictionaries for inter and intra DCA matrices
-        intra_dict = dict()
-        inter_dict = dict()
-
-        for _, (str_id_1, str_id_2, pdb_id_1, pdb_id_2, _) in enumerate(str_2_pdb):
-
-            # This try clause will load in all available benchmarsk - it is a speed bottleneck!
-            try:
-                # Get the STRING-ID from the mapped str_2_pdb list
-                string_id = "and".join((str_id_1, str_id_2))
-                # Get the PDB -D from the mapped str_2_pdb list
-                pdb_id = "and".join((pdb_id_1, pdb_id_2))
-
-                if get_dca:
-                    # Get the name of the dca file and import - this should really be upper triangle
-                    filename = os.path.join(file_path, string_id + suffix)
-                    array = np.load(filename, allow_pickle=True)
-
-                    if array.shape[0] != array.shape[1]:
-                        # If not triangular, convert dca_scores to upper triangle
-                        array = self.make_triangular_dca_array(filename)
-
-                else:
-                    # Get known physical distace file - should be upper triangle
-                    filename = os.path.join(file_path, pdb_id + suffix)
-                    array = np.load(filename, allow_pickle=True)
-
-                # Grab the length of all eligible STRING protein pairs
-                pairs = (str_id_1, str_id_2)
-
-                # Protein  lengths
-                L1 = int(self.get_anndata_field(
-                    pair_id=pairs, field='len1'))
-                L2 = int(self.get_anndata_field(
-                    pair_id=pairs, field='len2'))
-
-                # Create the symetrical matrix from the imported file
-                symmetric_array = array.T + array
-                np.fill_diagonal(symmetric_array, 0)
-
-                # Populate the dictionaries
-                intra_dict[pairs] = symmetric_array
-                inter_dict[pairs] = symmetric_array[: L1, L1:]
-
-            except Exception as e:
-                print(e)
-                # There are two reasons why a loop my pass, error, or lack of String-PDB mapping.
-                pass
-
-            # Make available to all methods
-            self.intra_dict = intra_dict
-            self.inter_dict = inter_dict
-
-        return intra_dict, inter_dict
-
-    def get_local_matrix(self, pairs, path, suffix=".npy"):
-        """Creates two local matrices, one containing the inter-protein contacts, 
-            the other containing the intra-protein contacts. 
-
-        :param pairs: String ID for the twp interacting proteins
-        :type pairs: list of strings
-        :param path: the path to the directory containing DCA files
-        :type path: str
-        :param suffix: the end of the file name (after the string or PDB ID's), defaults to ".npy"
-        :type suffix: str, optional
-        """
-
-        # Extract protein pair IDs and protein lengths
-        id_1, id_2 = pairs
-        L1 = int(self.get_anndata_field(pair_id=pairs, field='len1'))
-
-        # Import matrix file
-        file_name = os.path.join(path, id_1 + "and" + id_2 + suffix)
-        data_array_dig = np.load(file_name, allow_pickle=True)
-
-        # If not triangular, convert matrix to upper triangle
-        if data_array_dig.shape[0] != data_array_dig.shape[1]:
-            data_array_dig = self.make_triangular_dca_array(file_name)
-
-        # Symmetrize the matrix
-        data_array = data_array_dig.T + data_array_dig
-        np.fill_diagonal(data_array, 0)
-
-        # Extract the relevent localities: Inter-protein contacts
-        inter_array = copy.deepcopy(data_array_dig[: L1, L1:])
-        maxRow, maxCol = np.unravel_index(
-            inter_array.argmax(), inter_array.shape)
-        maxCol += L1
-
-        # Extract the relevent localities: Intra-protein contacts
-        intra_array = np.zeros((data_array.shape))
-        intra_array[0:L1, 0:L1] = data_array[0:L1, 0:L1]
-        intra_array[L1:, L1:] = data_array[L1:, L1:]
-
-        data_array[::] = 0
-        data_array[:L1, L1:] = inter_array
-        return(maxRow, maxCol, data_array, intra_array)
-
-    def plot_scatter_heatmap(self, pairs, dca_path=None, dist_path=None):
-        """Plots the contact map between two protein pairs based on DCA computations.
-            Top-100 scoring proteins are shown in blue, top-20 in red.
-
-        :param pairs: protein pairs
-        :type pairs: list of str
-        :param dca_path: path to directory containing DCA files, defaults to None
-        :type dca_path: str, optional
-        :param dist_path: path to file containing physical distance files, defaults to None
-        :type dist_path: str, optional
-        """
-        # Extract protein pair IDs
-        L1 = int(self.get_anndata_field(pair_id=pairs, field='len1'))
-        L2 = int(self.get_anndata_field(pair_id=pairs, field='len2'))
-
-        # Get DCA localities
-        maxRow, maxCol, inter_array, intra_array = self.get_local_matrix(
-            pairs=pairs, path=dca_path)
-
-        # Flatten inter-DCA arrays
-        inter_array_flat = inter_array.flatten()
-        inter_array_flat.sort()
-
-        # Flatten intra-DCA arrays
-        intra_array_flat = intra_array.flatten()
-        intra_array_flat.sort()
-
-        # Get data-points with top-100 DCA scores
-        idx_rows, idx_cols = np.where(intra_array >= intra_array_flat[-100])
-
-        # Create axis lines
-        fig = plt.figure()
-        plt.xlim(0, inter_array.shape[0])
-        plt.ylim(0, inter_array.shape[1])
-        plt.axhline(y=L1, linewidth=0.3, color='g', linestyle="-.")
-        plt.axvline(x=L1, linewidth=0.3, color='g', linestyle="-.")
-
-        # Modify tick fonts
-        plt.xticks(np.arange(0, L1 + L2, step=20), fontsize=1)
-        plt.yticks(np.arange(0, L1 + L2, step=20), fontsize=1)
-
-        # Visualise top-100 DCA points
-        plt.plot(idx_rows, idx_cols, color="g", marker=".",
-                 linestyle='None', markersize=1)
-
-        # Modify ticks, top 100 are blue, top 20 are red
-        for tick, c in [(-100, 'b'), (-20, 'r')]:
-            idx_rows, idx_cols = np.where(
-                inter_array >= inter_array_flat[tick])
-            plt.plot(idx_rows, idx_cols, color=c, marker=".",
-                     linestyle='None', markersize=1)
-            plt.text(maxRow, maxCol, "max", fontsize=5)
-            plt.xlim(0, inter_array.shape[0])
-            plt.ylim(0, inter_array.shape[1])
-
-        # Plot phycial distance
-        phys_pairs = pairs
-        dist_thres = 30
-
-        # Generate intra-protein dict if it doesn't exist
-        self.intra_dict, _ = self.create_dictionary(
-            dist_path=dist_path, file_path=dca_path)
-        return
-
-    def generate_frequency_coupler(self, msa_file_path, cache_dir_path='/configs'):
-        """Retrieves a frequency_coupler instance
-
-        :param msa_file_path: path to the paired_msa alignment file
-        :type msa_file_path: string
-        :return: an instance of FrequencyCoupler()
-        :rtype: object
-        """
-        fc = FrequencyCoupler(
-            anndata_path=self.anndata_path, msa_file_path=msa_file_path, cache_dir_path=cache_dir_path)
-        return fc
-
-    def generate_msa_synthesizer(self):
-        """Returns an instance of MsaSynthesizer.
-
-        :return: MsaSynthesizer instance
-        :rtype: object
-        """
-        msa_synthesizer = MsaSynthesizer()
-        return msa_synthesizer
-
-
-class FileParser:
-    """File parser to grab co-evolution, entropy and annotation data for protein pairs.
-        This is a class designed to parse the blastp file directory found in Taos remote
-        location "/mnt/mnemo6/tao/PPI_Coevolution/ecoli_size2complex_new/blastp".
-        The aim is to take any file matching a specific pattern and to collate it into a list.
-        These files can then be moved or copied en bulk to a new location.
-    """
-
-    def __init__(self, root_path="/mnt/mnemo1/sum02dean/dean_mnt/projects/blastp"):
-        """
-        :param root_path: path to root directory "/mnt/mnemo6/tao/PPI_Coevolution/ecoli_size2complex_new/blastp/"
-        :type root_path: str, optional
-        """
-        self.root_path = root_path
-
-    def get_root_path(self):
-        """Basic getter
-        :return: root path
-        :rtype: string
-        """
-        return self.root_path
-
-    def get_data(self, category='coevolution'):
-        """Grabs the data of protein pairs according to the given category.
-        :param category: one of 'coevolution', 'entropy' or 'annotation', defaults to 'coevolution'
-        :type category: str, optional
-        :return: a list of all of the file names for a given category
-        :rtype: list
-        """
-        if category == 'coevolution':
-            pattern = '*_pydcaFNAPC_array.npy'
-
-        elif category == 'entropy':
-            pattern = '*_apc_allResidues.npy'
-
-        file_list = []
-        dir_name = os.path.join(self.root_path, pattern)
-        files = glob.glob(dir_name)
-        for name in files:
-            if name.find(pattern):
-                file_list.append(name)
-        return file_list
-
-    def copy_data(self, file_list, dest_dir):
-        """Method for copying data from one location to another.
-            :param file_list: list of files to be copied using relative path, to generate this list see .get_data() method.
-            :type file_list: list
-            :param dest_dir: copy destination path for all provided files in file_list.
-            :type dest_dir: string
-            """
-        if not os.path.exists(dest_dir):
-            os.makedirs(dest_dir)
-
-        for f in file_list:
-            shutil.copy(f, dest_dir)
-
-    def move_data(self, file_list, dest_dir):
-        """Method for moving data from one location to another.
-            :param file_list: list of files to be moved using relative path, to generate this list see .get_data() method.
-            :type file_list: list
-            :param dest_dir: move destination path for all provided files in file_list.
-            :type dest_dir: string
-            """
-        if not os.path.exists(dest_dir):
-            os.makedirs(dest_dir)
-
-        for f in file_list:
-            shutil.move(f, dest_dir)
-
 
 class GraphMaker:
     """
@@ -616,120 +26,105 @@ class GraphMaker:
     def __init__(self, anndata_path='./adata.csv'):
         self.anndata_path = anndata_path
         self.anndata = pd.read_csv(anndata_path, sep='\t')
+        self.D = {}
 
-    def __get_top_ranking_bet_value_dict(self, record=None, top_num=20):
-        """This is a function written by Tao to break down the DCA matrix and fetch the
-         top DCA-scoring pairs and their associated DCA scores"""
-
-        query_pro1, query_pro2, l1, l2, coevo_path, suffix = record
-        data_file_name = coevo_path + query_pro1 + "and" + query_pro2 + suffix + ".npz"
-        data_array_dig = np.load(data_file_name)['arr_0']
-        data_array = data_array_dig.T + data_array_dig
-        np.fill_diagonal(data_array, 0)
-        bet_data_array = data_array[:l1, l1:]
-        ascending_bet_data_array = np.sort(bet_data_array.flatten())
-        descending_bet_data_array = ascending_bet_data_array[::-1]
-        return_list = [query_pro1, query_pro2]
-        esisted_top_values = set()
-
-        scores = []
-        pairs_1 = []
-        pairs_2 = []
-
-        for j in range(top_num):
-            top_value = descending_bet_data_array[j]
-            if top_value not in esisted_top_values:
-                top_idx = np.where(bet_data_array == top_value)
-                for i in range(len(top_idx[0])):
-                    top_row, top_col = top_idx[0][i], top_idx[1][i]
-                    top_col += l1
-                    if len(return_list) < (2 + top_num * 3):
-                        return_list.extend((top_value, top_row, top_col))
-                        scores.append(top_value)
-                        pairs_1.append(top_row)
-                        pairs_2.append(top_col)
-
-                esisted_top_values.add(top_value)
-            if len(return_list) > (2 + top_num * 3):
-                break
-
-        df = pd.DataFrame(
-            {'pair_1': pairs_1, 'pair_2': pairs_2, 'scores': scores})
-        return df, (return_list), query_pro1, query_pro1
-
-    def generate_top_dca_scores(self, pair_1, pair_2, len_1, len_2, coevo_path, n_dca=20,
-                                fn_suffix='_pydcaFNAPC_array'):
-        """Extracts the top _dca scores between two protein pairs
-
-        :param pair_1: name of protein 1
-        :type pair_1: string
-        :param pair_2: name of protein 2
-        :type pair_2: string
-        :param len_1: length of protein 1
-        :type len_1: int
-        :param len_2: length of protein 2
-        :type len_2: int
-        :param coevo_path: path to coevolutionary data
-        :type coevo_path: string
-        :param n_dca: number of top dca scores to include, defaults to 20
-        :type n_dca: int, optional
-        :param fn_suffix: suffix of the coevolutionary file, defaults to '_pydcaFNAPC_array'
-        :type fn_suffix: str, optional
-        :return: top-10 dca for a given protein pair
-        :rtype: list
+    def collect_data(self, x):
+        """Call as a lambda function on each row of a pandas dataframe.
+        Remeber to instantaite D={} as as a global var in the main script.
+        
+        :param x: each row of a pandas.core.DataFrame
+        :type x: list
         """
-        record = [pair_1, pair_2, len_1, len_2, coevo_path, fn_suffix]
-        dca_stats, _, _, _ = self.__get_top_ranking_bet_value_dict(
-            record, top_num=n_dca)
-        return dca_stats
 
-    def generate_dca_bridges(self, coevo_path, pair_1, pair_2, len_1, len_2, n_dca=20):
-        """Extracts the residue names corresponding to the top dca scores. These are used to connect the two
-        protein graphs together on "bridges".
+        # Feature lists
+        dca_score = []
+        pos_1 = []
+        pos_2 = []
 
-        :param coevo_path: path to coevolutionary data
-        :type coevo_path: string
-        :param pair_1: protein pair 1
-        :type pair_1: string
-        :param pair_2: protein pair 2
-        :type pair_2: string
-        :param len_1: protein length 1
-        :type len_1: int
-        :param len_2: protein length 2
-        :type len_2: int
-        :param n_dca: number of top dcas, defaults to 20
-        :type n_dca: int, optional
-        :return: list containing the tuple of sorted top ranking pairs
-        :rtype: list
+        # Grab name
+        name_1 = x[0]
+        name_2 = x[1]
+        combined_name = "and".join([name_1, name_2])
+
+        # Extract dca scores and positions
+        for i in range(2, len(x), 3):
+            dca_score.append(x[i])
+            pos_1.append(x[i + 1])
+            pos_2.append(x[i + 2])
+
+        if combined_name not in self.D.values():
+            # Add the data to the named entry
+            self.D[combined_name] = {'dca': dca_score,
+                                     'pos_1': pos_1, 'pos_2': pos_2}
+
+            # Reset the feature lists
+            dca_score = []
+            pos_1 = []
+            pos_2 = []
+        return
+
+    def extract_data(self, df):
+        """Modifies a globally defined dictionary with protein names,
+        DCA values, and residue positions 
+
+        :param df: Tao's new data
+        :type df: pandas.core.DataFrame
+
+        :return: There is no return type. Global D (dict) will be modified.
+        :rtype: None
         """
-        dca_stats = self.generate_top_dca_scores(pair_1=pair_1,
-                                                 pair_2=pair_2,
-                                                 len_1=len_1,
-                                                 len_2=len_2,
-                                                 n_dca=n_dca,
-                                                 coevo_path=coevo_path)
+        _ = df.apply(lambda x: self.collect_data(x), axis=1)
+        return None
 
-        # Subset the residues
-        res_1 = [int(x) for x in dca_stats.values[:, 0]]
-        res_2 = [int(x) for x in dca_stats.values[:, 1]]
+    def get_position_wise_df(self, x, protein_1, protein_2):
+        """Generates an inter protein dca score dictionary."""
 
-        # Get top 20-dca pairs, generate bridges
-        res_a = res_1[0:n_dca]
-        res_b = res_2[0:n_dca]
-        scores = dca_stats['scores'].iloc[:n_dca]
-        bridges = list(zip(res_a, res_b))
-        return bridges
+        # Intialise D dict
+        _ = self.extract_data(x)
+
+        dca_dict = {}
+        protein_pair = self.D["and".join([protein_1, protein_2])]
+
+        # Get the top 20 dca stats, if none available set to zero
+        pos_1 = protein_pair['pos_1']
+        pos_2 = protein_pair['pos_2']
+        dca_raw = protein_pair['dca']
+
+        # Scale DCA values
+        dca = self.process_dca(dca_raw, max_value=1)
+        dca_bridges = list(zip(pos_1, pos_2))
+        l = list(zip(pos_1, dca))
+
+        # Populate the dictionary
+        for pos, score in l:
+            if pos not in dca_dict.keys():
+                dca_dict[pos] = [score]
+            else:
+                dca_dict[pos].append(score)
+
+        # Take the max value
+        dca_dict = {}
+        for k, v in dca_dict.items():
+            dca_dict[k] = max(v)
+
+        # Get residue_1 and rediue_2, and their associated DCA score
+        df = pd.DataFrame({'pos_1': pos_1, 'pos_2': pos_2, 'dca': dca})
+
+        return df, dca, dca_raw, dca_bridges
 
     def generate_alpha_fold_structures(self, string_to_af, pair_1, pair_2):
         """Queries alphs-fold predictions for a given protein sequnece and returns
-         alpha-fld predicted structures.
+         alpha-fold predicted structure for each protein in the pair.
 
         :param string_to_af: maping path between string-alphaFold
         :type string_to_af: string
+
         :param pair_1: protein name 1
         :type pair_1: string
+        
         :param pair_2: protein name 2
         :type pair_2: string
+        
         :return: alphaFold structures for each protein
         :rtype: objects
         """
@@ -760,10 +155,6 @@ class GraphMaker:
         sloppyio_2 = SloppyPDBIO()
         sloppyio_2.set_structure(protein_2)
 
-        # (Optional) save the sloppyIO files
-        # sloppyio_1.save("sloppyio_1.pdb")
-        # sloppyio_2.save("sloppyio_2.pdb")
-
         # Get protein residue structures
         residues_1 = [x for x in sloppyio_1.structure.get_residues()]
         residues_2 = [x for x in sloppyio_2.structure.get_residues()]
@@ -771,11 +162,12 @@ class GraphMaker:
 
     def calculate_residue_dist(self, seq_1, seq_2):
         """Calculates the euclidean distance between two residues in 3D space.
-
         :param residue_one: reference residue
         :type residue_one:  object
+        
         :param residue_two: target residue
         :type residue_two: object
+        
         :return: sqaured euclidean distance
         :rtype: float
         """
@@ -788,8 +180,10 @@ class GraphMaker:
 
         :param seq_1: protein sequence 1
         :type seq_1: string
+        
         :param seq_2: protein sequence 2
         :type seq_2: string
+        
         :return: an nd array which encodes pairwise residue distances
         :rtype: np.array
         """
@@ -803,14 +197,16 @@ class GraphMaker:
 
     def generate_proximity_matrix(self, seq_1, seq_2, angstroms=10, show=False):
         """Creates an adacency matrix for points within n angstroms of each other
-
         :param seq_1: protein sequence 1
         :type seq_1: string
+
         :param seq_2: protein sequence 2
         :type seq_2: sting
+        
         :param angstroms: max distance threshold , defaults to 10
         :type angstroms: int, optional
         :param show: to plot matrix, defaults to False
+        
         :type show: bool, optional
         :return: a proximity matrix for points considered less than n angstroms apart
         :rtype: np.array
@@ -830,17 +226,19 @@ class GraphMaker:
             sns.heatmap(adjacency_matrix)
             plt.show()
 
-        return adjacency_matrix
+        return adjacency_matrix, contact_map
 
     def generate_graphs(self, adjacency_matrix_1, adjacency_matrix_2, show=False):
         """Generates the initial graphs from provided adjacency matrices.
-
+        
         :param adjacency_matrix_1: proximity matrix for protein 1
         :type adjacency_matrix_1: np.array
+        
         :param adjacency_matrix_2: proximity matrix for protein 2
         :type adjacency_matrix_2: np.array
         :param show: plot graphs, defaults to False
         :type show: bool, optional
+        
         :return: returns networkX graphs corrresponding to each adjacency matrix
         :rtype: tuple of networkX objects
         """
@@ -861,138 +259,35 @@ class GraphMaker:
             plt.show()
         return G_1, G_2
 
-    def map_net_surf_to_graphs(self, graph_2, pair_1, pair_2, ns_path_msa, ns_path_seq, suffix='_map2MSA.csv'):
-        """Maps the graphs node labels to the corresponding points from MSA, and returns net-surf residue 
-        features at these points.
-
-        :param graph_2: graph for protein 2
-        :type graph_2: networkX object
-        :param pair_1: protein 1 name
-        :type pair_1: string
-        :param pair_2: protein 2 name
-        :type pair_2: string
-        :param ns_path_msa: net-surf path
-        :type ns_path_msa: string
-        :param ns_path_seq: net-surf path for protein sequence
-        :type ns_path_seq: string
-        :param suffix: file ending for MSA, defaults to '_map2MSA.csv'
-        :type suffix: str, optional
-        :return: mapping between msa to sequence, new node labels, and net-surf features for both proteins.
-        :rtype: tuple
-        """
-
-        # -------- MSA-Seq Mapping ----------
-
-        # Get the seq-MSA mapped feature matrix
-        net = pair_1 + suffix
-        fn = os.path.join(ns_path_msa, net)
-        net_surf_1 = pd.read_csv(fn)
-
-        # Get the seq-MSA mapped feature matrix
-        net = pair_2 + suffix
-        fn = os.path.join(ns_path_msa, net)
-        net_surf_2 = pd.read_csv(fn)
-
-        # -------- SEQUENCE ----------
-        net = pair_1 + '.csv'
-        fn = os.path.join(ns_path_seq, net)
-        x_net_surf_1 = pd.read_csv(fn)
-
-        net = pair_2 + '.csv'
-        fn = os.path.join(ns_path_seq, net)
-        x_net_surf_2 = pd.read_csv(fn)
-
-        # Get new graph labels
-        graph_1_labels = list(set([x for x in net_surf_1.seqPos.values]))
-
-        # sequence and MSA maps for protein-1
-        seq_pos_p1 = net_surf_1.seqPos
-        msa_pos_p1 = net_surf_1.MSAPos
-        msa_2_seq_p1 = dict(zip(msa_pos_p1, seq_pos_p1))
-        seq_2_msa_p1 = dict(zip(seq_pos_p1, msa_pos_p1))
-
-        # sequence and MSA maps for protein-2
-        seq_pos_p2 = [x + (seq_pos_p1.values[-1] + 1)
-                      for x in net_surf_2.seqPos]
-        msa_pos_p2 = [x + (msa_pos_p1.values[-1] + 1)
-                      for x in net_surf_2.MSAPos]
-        msa_2_seq_p2 = dict(zip(msa_pos_p2, seq_pos_p2))
-        seq_2_msa_p2 = dict(zip(seq_pos_p2, msa_pos_p2))
-
-        # Reset G2 labels
-        g2_labels = [x + (graph_1_labels[-1]) for x in x_net_surf_2.n.values]
-        G_2_labels = dict(zip(graph_2.nodes, g2_labels))
-
-        return msa_2_seq_p1, msa_2_seq_p2, G_2_labels, x_net_surf_1, x_net_surf_2
-
-    def relabel_graph_nodes(self, graph, new_labels):
-        """Overwrites node labels in a graph with new_labels.
-
-        :param graph: networkX graph object
-        :type graph: object
-        :param new_labels: new labels to provide
-        :type new_labels: list
-        :return: graph object with renamed node labels
-        :rtype: networkx object
-        """
-        # Relabel nodes
-        new_graph = nx.relabel_nodes(graph, new_labels)
-        return new_graph
-
-    def check_bridge_connections(self, msa_coder_1, msa_coder_2, graph_1, graph_2, bridges):
-        """Test if all bridge nodes are contained within their respective graphs - should be! 
-
-        :param msa_coder_1: msa-seq coder for protein 1
-        :type msa_coder_1: dict
-        :param msa_coder_2: msa-seq coder for protein 2
-        :type msa_coder_2: dict
-        :param graph_1: networkx graph 1    
-        :type graph_1: object
-        :param graph_2: networkX graph 2    
-        :type graph_2: object
-        :param bridges: list of dca bridges
-        :type bridges: list
-        :return: 0 if tests passed, else 1
-        :rtype: int
-        """
-
-        g1_e = set(sorted([x[1] for x in graph_1.edges]))
-        g2_e = [x for x in set(sorted([x[1] for x in graph_2.edges]))]
-
-        for i, (b1, b2) in enumerate(bridges):
-            if (msa_coder_1[b1] not in g1_e):
-                print('failed with exit status: 1')
-                return 1
-
-            if (msa_coder_2[b2] not in g2_e):
-                print('failed with exit status: 1')
-                return 1
-        return 0
-
-    def populate_graph_features(self, graph_1, graph_2, x_net_surf_1, x_net_surf_2):
+    def populate_graph_features(self, graph_1, graph_2, protein_1, protein_2, netsurf_path_dict):
         """ Populates each node (residue) with its respective net-surf feature vector
 
         :param graph_1: graph for protein 1
         :type graph_1: networkX graph object
+
         :param graph_2: graph for protein 2
         :type graph_2: networkX graph object
-        :param x_net_surf_1: net-surf feautures for protein 1
-        :type x_net_surf_1: pandas dataframe
-        :param x_net_surf_2: net-surf features for protein 2
-        :type x_net_surf_2: pandas dataframe
+
         :return: graph1 and graph2 populated with node features
         :rtype: tuple of networkX graphs
         """
+        # Get netsurfp features for protein 1
+        path_1 = netsurf_path_dict[protein_1]
+        x_1 = pd.read_csv(path_1)
+
+        # Get netsurfp features for protein 2
+        path_2 = netsurf_path_dict[protein_2]
+        x_2 = pd.read_csv(path_2)
 
         # Protein-1
-        vars_to_keep = [x for x in x_net_surf_1.columns if x not in [
+        vars_to_keep = [x for x in x_1.columns if x not in [
             'id', 'seq', 'n', 'q3', 'q8']]
-        features_p1 = x_net_surf_1.loc[:, vars_to_keep]
+        features_p1 = x_1.loc[:, vars_to_keep]
 
         # Protein-2
-        vars_to_keep = [x for x in x_net_surf_2.columns if x not in [
+        vars_to_keep = [x for x in x_2.columns if x not in [
             'id', 'seq', 'n', 'q3', 'q8']]
-        features_p2 = x_net_surf_2.loc[:, vars_to_keep]
+        features_p2 = x_2.loc[:, vars_to_keep]
 
         # Populate node features before making Union on graphs
         G_1_features = {}
@@ -1008,23 +303,30 @@ class GraphMaker:
         # Set the node attributes
         nx.set_node_attributes(graph_1, G_1_features)
         nx.set_node_attributes(graph_2, G_2_features)
+
         return graph_1, graph_2
 
-    def link_graphs(self, graph_1, graph_2, bridges, msa_coder_1, msa_coder_2, show=False):
+    def link_graphs(self, graph_1, graph_2, dca_bridges, show=False):
         """Linkes the two protein graphs on their top 'n' DCA connections (bridges)
 
         :param graph_1: graph for protein 1
         :type graph_1: networkX graph object
+        
         :param graph_2: graph for protein 2
         :type graph_2: networkX graph object
-        :param bridges: dca connections
-        :type bridges: list
+        
+        :param dca_bridges: dca connections
+        :type dca_bridges: list
+        
         :param msa_coder_1: msa-seq coder for protein 1
         :type msa_coder_1: dict
+        
         :param msa_coder_2: sa-seq coder for protein 2
         :type msa_coder_2: dict
+        
         :param show: to plot graphs, defaults to False
         :type show: bool, optional
+        
         :return: Union of the two protein graphs    
         :rtype: networkX graph object
         """
@@ -1032,11 +334,11 @@ class GraphMaker:
         # Connect the graphs together - use map-encoder for -b
         U = nx.union(graph_1, graph_2, rename=('a-', 'b-'))
 
-        for (b1, b2) in bridges:
+        for (b1, b2) in dca_bridges:
             try:
-                U.add_edge('a-' + str(msa_coder_1[b1]),
-                           'b-' + str(msa_coder_2[b2]),
-                           color='red')
+                U.add_edge('a-' + str(b1),
+                           'b-' + str(b2)
+                           )
             except Exception as e:
                 print("something went wrong during graph-linking.")
                 print(e)
@@ -1064,518 +366,265 @@ class GraphMaker:
             plt.show()
         return U
 
-    def get_computational_graph(self, string_to_af, ns_path_msa, ns_path_seq,
-                                coevo_path, n_samples=2, n_dca=20, show=False):
-        """High level method to generate graphs from annotation file on all proteins.
+    def populate_edge_dca(self, graph, x, protein_1, protein_2, feature_name='dca'):
+        """Populate the edge with dca score values
 
-        :param string_to_af: path that maps STRING to AlphaFold
-        :type string_to_af: string
-        :param ns_path_msa: net-surf path for MSA
-        :type ns_path_msa: string
-        :param ns_path_seq: net-surf path for protein seq
-        :type ns_path_seq: string   
-        :param coevo_path: path to co-evolution data
-        :type coevo_path: string
-        :param n_samples: number of graphs to produce, defaults to 2
-        :type n_samples: int, optional
-        :param n_dca: number of top ranked dca scores to consder, defaults to 20
-        :type n_dca: int, optional
-        :param show: plot all , defaults to False
-        :type show: bool, optional
-        :return: tuple containing list of graphs and list of labels
-        :rtype: tuple
+        :param graph: network x graph
+        :type graph: nx object
+        :param x: Tao's DCA data    
+        :type x: pandas.core.DataFrame
+        
+        :param protein_1: protein 1 name    
+        :type protein_1: string 
+        :param protein_2: protein 2 name    
+        :type protein_2: str
+
+        :param feature_name: _description_, defaults to 'dca'
+        :type feature_name: str, optional
+        
+        :return: nx graph with dca scores as edge feature
+        :rtype: _type_
         """
 
-        # 1. Loop over all observations in anndata file
-        graphs = []
-        labels = []
-        for (pair_1, pair_2) in tqdm(self.anndata.iloc[:n_samples, 0:2].values):
+        # Make data into a dataframe
+        df, _, _, _ = self.get_position_wise_df(x, protein_1, protein_2)
+
+        for edge in U.edges:
+            if ('a' in edge[0]) and ('b' in edge[1]):
+
+                # Pull out the edges with DCA connection (max DCA)
+                e_1 = int(edge[0].split('-')[-1])
+                e_2 = int(edge[1].split('-')[-1])
+
+                # Extract DCA scores pertaining to the edges e1 & e2
+                dca_score = df[(df['pos_1'] == e_1) & (
+                    df['pos_2'] == e_2)]['dca'].values
+
+                # Set dca edge type to dca score
+                attrs = {(edge[0], edge[1]): {feature_name: float(dca_score)}}
+                nx.set_edge_attributes(graph, attrs)
+
+            else:
+                # Set dca edge type to 0
+                attrs = {(edge[0], edge[1]): {feature_name: 0.0}}
+                nx.set_edge_attributes(graph, attrs)
+
+        return graph
+
+    def populate_edge_proximity(self, graph, edge_dict, feature_name='proximity'):
+        """Populate none dca edges with inverse proximity values
+
+        :param graph: Union graph of G1 and G2
+        :type graph: nx object
+
+        :param x: edge_dict, containing {edge_id: values} as {k:v} pairs
+        :type x: dictions
+
+        :return: graph U containing edge features
+        :rtype: networkx graph
+        """
+        
+        for _, edge in enumerate(graph.edges):
+            if edge[0][0] == edge[1][0]:
+                attrs = {(edge[0], edge[1]): {feature_name: float(edge_dict[edge])}}
+            else:
+                attrs = {(edge[0], edge[1]): {feature_name: 0.0}}
+            nx.set_edge_attributes(graph, attrs)
+        return graph
+
+    def process_proximity(self, x, max_value=10, mask=None, invert=True):
+        """Process the proximity values via max value division and invertion (1-value)
+
+        :param x: proximity scores
+        :type x: list of ints
+
+        :param max_value: the maximum value in the lest, defaults to 10
+        :type max_value: int, optional
+        
+        :param mask: to mask out any edges that connect residues > 10 angstrom, defaults to None
+        :type mask: _type_, optional
+        
+        :param invert: if true, a score of 0.x becomes 1-0.x, defaults to True
+        :type invert: bool, optional
+
+        :return: generates processed proximity scores   
+        :rtype: np.array
+        """
+
+        # Scale proximity values to max_value
+        x = copy.deepcopy(x)
+        x_array = np.array(x) / max_value
+
+        # To mask background edges (geater than 10 angstroms)
+        if mask is None:
+            mask = np.ones(np.shape(x))
+
+        # Apply mask
+        x_array = mask * x_array
+
+        # Invert: small scores should become large
+        if invert:
+            x_array = 1 - x_array
+        return x_array
+
+    def get_proximity_dict(self, x, graph_name='a'):
+        """Converts proximity scores into a dictionary"""
+        row, col = x.shape
+        edge_d = {}
+        for r in range(row):
+            for c in range(col):
+                key = ('{}-{}'.format(graph_name, r)
+                       ), ('{}-{}'.format(graph_name, c))
+                if key not in edge_d.keys():
+                    val = x[r, c]
+                    edge_d[key] = val
+        return edge_d
+
+    def process_dca(self, x, max_value=1):
+        """Scales DCA values
+
+        :param x: DCA scores
+        :type x: list
+
+        :param max_value: maximum value to clip DCA scores to, defaults to 1
+        :type max_value: int, optional
+        
+        :return: clipped values
+        :rtype: np.array
+        """
+        # Scale DCA values
+        x = copy.deepcopy(x)
+        x_array = np.array(x)
+        x_array[x_array > 1] = max_value
+        return x_array
+
+    def save_graph_data(self, graph, protein_1, protein_2, label):
+
+        # Create graph_data dir if not present
+        graph_name = "and".join([protein_1, protein_2])
+        graph_folder_name = 'dca_graph_data'
+        labels_folder_name = 'dca_graph_labels'
+
+        # Graph dir
+        isExist = os.path.exists(graph_folder_name)
+        if not isExist:
+            os.makedirs(graph_folder_name)
+            print("{} directory created.".format(graph_folder_name))
+
+        # Label dir
+        isExist = os.path.exists(labels_folder_name)
+        if not isExist:
+            # Create it
+            os.makedirs(labels_folder_name)
+            print("{} directory created.".format(labels_folder_name))
+
+        nx.write_gpickle(graph, os.path.join(
+            graph_folder_name, graph_name + ".gpickle"))
+
+        # Create labels
+        if label == 'P':
+            bin_label = '1'
+        else:
+            bin_label = '0'
+
+        # Format data to save on the fly
+        labels_fn = os.path.join(labels_folder_name, 'labels.csv')
+        fieldnames = ['protein_1', 'protein_2', 'label']
+        row = {'protein_1': protein_1,
+               'protein_2': protein_2, 'label': bin_label}
+
+        # Open the file to append data to - only save new entries
+        with open(labels_fn, 'a') as fd:
+            writer = csv.DictWriter(fd, fieldnames=fieldnames)
+
+            # Open file using seperate reader, and check the rows
+            with open(labels_fn, 'r') as file1:
+                existing_lines = [
+                    line for line in csv.reader(file1, delimiter=',')]
+                row_check = [x for x in row.values()]
+
+                # If header already present, don't write
+                if fieldnames not in existing_lines:
+                    writer.writeheader()
+                # If row already present, don't write
+                if row_check not in existing_lines:
+                    writer.writerow(row)
+    
+    def get_computational_graph(self, string_to_af, coevo_path, netsurf_d, n_samples=-1):
+        # Loop over all instances in the anndata (annotation data) file
+        for i in tqdm(range(rows)):
             try:
-                len_1 = int(self.anndata.loc[(self.anndata['STRING_ID1'] == pair_1) & (
-                    self.anndata['STRING_ID2'] == pair_2)].len1)
-                len_2 = int(self.anndata.loc[(self.anndata['STRING_ID1'] == pair_1) & (
-                    self.anndata['STRING_ID2'] == pair_2)].len2)
-                label = self.anndata.loc[(self.anndata['STRING_ID1'] == pair_1) & (
-                    self.anndata['STRING_ID2'] == pair_2)].benchmark_status.values
-                labels.append(label)
-
-                # 2. Generate_dca_bridges(self, n=20)
-                bridges = self.generate_dca_bridges(pair_1=pair_1,
-                                                    pair_2=pair_2,
-                                                    len_1=len_1,
-                                                    len_2=len_2,
-                                                    n_dca=n_dca,
-                                                    coevo_path=coevo_path)
-                # 3. Generate alpha-fold residues
-                residue_1, residue_2 = self.generate_alpha_fold_structures(string_to_af,
-                                                                           pair_1=pair_1,
-                                                                           pair_2=pair_2)
-
-                # 4. Generate proximity adjacency matrices
-                am_1 = self.generate_proximity_matrix(
-                    seq_1=residue_1, seq_2=residue_1, angstroms=10, show=show)
-
-                am_2 = self.generate_proximity_matrix(
-                    seq_1=residue_2, seq_2=residue_2, angstroms=10, show=show)
-
-                # 5. Build graph
-                G_1, G_2 = self.generate_graphs(am_1, am_2, show=show)
-
-                # 6. Parse net_surf
-                outputs = self.map_net_surf_to_graphs(ns_path_msa=ns_path_msa,
-                                                      ns_path_seq=ns_path_seq,
-                                                      pair_1=pair_1,
-                                                      pair_2=pair_2,
-                                                      graph_2=G_2,
-                                                      suffix='_map2MSA.csv')
-
-                # 7. Collect outputs
-                msa_2_seq_p1, msa_2_seq_p2, G_2_labels, x_net_surf_1, x_net_surf_2 = outputs
-
-                # 8. Re-label graph
-                G_2 = self.relabel_graph_nodes(graph=G_2,
-                                               new_labels=G_2_labels)
-
-                # 9. Check bridge stability
-                self.check_bridge_connections(msa_coder_1=msa_2_seq_p1,
-                                              msa_coder_2=msa_2_seq_p2,
-                                              graph_1=G_1,
-                                              graph_2=G_2,
-                                              bridges=bridges)
-
-                # 10. Populate features
-                G_1, G_2 = self.populate_graph_features(graph_1=G_1,
-                                                        graph_2=G_2,
-                                                        x_net_surf_1=x_net_surf_1,
-                                                        x_net_surf_2=x_net_surf_2)
-
-                # 11. Link graphs
-                U = self.link_graphs(graph_1=G_1,
-                                     graph_2=G_2,
-                                     bridges=bridges,
-                                     msa_coder_1=msa_2_seq_p1,
-                                     msa_coder_2=msa_2_seq_p2,
-                                     show=show)
-
-                # 12. Save and return graphs
-                graphs.append(U)
-                graph_name = "and".join([pair_1, pair_2])
-
-                # Create graph_data dir if not present
-                graph_folder_name = 'graph_data'
-                isExist = os.path.exists(graph_folder_name)
-                if not isExist:
-                    # Create it
-                    os.makedirs(graph_folder_name)
-                    print("{} directory created.".format(graph_folder_name))
-
-                labels_folder_name = 'graph_labels'
-                isExist = os.path.exists(labels_folder_name)
-                if not isExist:
-                    # Create it
-                    os.makedirs(labels_folder_name)
-                    print("{} directory created.".format(labels_folder_name))
-
-                nx.write_gpickle(U, os.path.join(
-                    graph_folder_name, graph_name + ".gpickle"))
-
-                # Create labels
-                if label == 'P':
-                    bin_label = '1'
-                else:
-                    bin_label = '0'
-
-                # Format data to save on the fly
-                labels_fn = os.path.join(labels_folder_name, 'labels.csv')
-                fieldnames = ['protein_1', 'protein_2', 'label']
-                row = {'protein_1': pair_1,
-                       'protein_2': pair_2, 'label': bin_label}
-
-                # Open the file to append data to - only save new entries
-                with open(labels_fn, 'a') as fd:
-                    writer = csv.DictWriter(fd, fieldnames=fieldnames)
-
-                    # Open file using seperate reader, and check the rows
-                    with open('graph_labels/labels.csv', 'r') as file1:
-                        existing_lines = [
-                            line for line in csv.reader(file1, delimiter=',')]
-                        row_check = [x for x in row.values()]
-
-                        # If header already present, don't write
-                        if fieldnames not in existing_lines:
-                            writer.writeheader()
-                        # If row already present, don't write
-                        if row_check not in existing_lines:
-                            writer.writerow(row)
-
-            # If something breaks - pass
-            except Exception as e:
-                print('Skipped')
-                print(e)
-                pass
-        return graphs, labels
-
-
-class MsaSynthesizer:
-    """
-        This class is responsible for artificially generating an MSA
-        with some co-evolutionary contraints - used to test the pyDCA implimentation.
-    """
-
-    def __init__(self):
-        self.tokens = [
-            '-', 'A', 'C',
-            'D', 'E', 'F',
-            'G', 'H', 'I',
-            'K', 'L', 'M',
-            'N', 'P', 'Q',
-            'R', 'S', 'T',
-            'V', 'W', 'X', 'Y']
-
-        # Instantiate the ASCII to char coders
-        self.encoder = self.__build_encoder()
-        self.decoder = self.__build_decoder()
-    # Class methods
-
-    def generate_random_msa(self, len_msa=100, dep_msa=10, mutate_threshold=0.8):
-        # Generate ASCII MSA and select random column pair
-        ascii_msa = self.__generate_ascii_msa(len_msa, dep_msa)
-        pair = self.__select_random_pairs(n=2, len_msa=len_msa)
-
-        # Mutate the random columns in a synchronous manner
-        covariate_ascii_msa = self.__generate_covariate_pair(x=ascii_msa,
-                                                             pair=pair, mutate_threshold=mutate_threshold)
-
-        # Convert ASCII MSA to character MSA
-        msa = self.__decode_ascii_matrix_to_char_matrix(covariate_ascii_msa)
-        return pair, msa
-
-    def convert_msa_to_alignment(self, df):
-        """ Create a fasta MSA alignment using biopython
-
-        :param df: a dataframe containing amino acid character encodings
-        :type df: pandas DataFrame
-        :return: seqAlign object
-        :rtype: obect
-        """
-        seqs = ["".join(x) for x in df.values.tolist()]
-        alignments = MultipleSeqAlignment(
-            [], Gapped(SingleLetterAlphabet, "-"))
-
-        for i, seq in enumerate(seqs):
-            alignments.add_sequence(str(i), seq)
-        return alignments
-
-    def save_to_fasta(self, alignments, file_name):
-        """Writes a Bio segAlign MSA object to fasta file.
-
-        :param alignments: alignment objects
-        :type alignments: Bio object
-        :param file_name: path/filename - to save fasta file
-        :type file_name: string
-        """
-        with open(file_name, "w") as handle:
-            SeqIO.write(alignments, handle, "fasta")
-            handle.close()
-
-    def __char_to_ascii(self, x):
-        """ Decodes character to ascii float
-
-        :param x: character to decoder
-        :type x: string
-        :return: the ascii coe mapped to th string character
-        :rtype: float
-        """
-        return self.encoder[x]
-
-    def __decode_ascii_matrix_to_char_matrix(self, x):
-        """ Takes an ascii matrix and decodes it to a character matrix of amino acids.
-
-        :param x: ascii n-d array
-        :type x: numpy array
-        :return: pandas DataFrame of amino acid tokens
-        :rtype: pandas DataFrame
-        """
-        df = pd.DataFrame(x)
-        df = df.applymap(self.__ascii_to_char)
-        return df
-
-    def __encode_char_to_ascii_matrix(self, df):
-        """ Takes an char matrix and encodes it to an ascii matrix.
-
-        :param x: ascii n-d array
-        :type x: numpy array
-        :return: pandas DataFrame of amino acid tokens
-        :rtype: pandas DataFrame
-        """
-        df = df.applymap(self.__char_to_ascii)
-        return df
-
-    def __ascii_to_char(self, x):
-        """ Encodes ascii characters to character string
-
-        :param x: ascii character
-        :type x: float
-        :return: the character mapped to ascii code
-        :rtype: string
-        """
-        return self.decoder[x]
-
-    def __generate_ascii_msa(self, len_msa, dep_msa):
-        """ Generates a random msa matrix in ascii format.
-
-        :param len_msa: the number of resiues in the msa matrix
-        :type len_msa: int
-        :param dep_msa: the depth of the msa (amount of sequences)
-        :type dep_msa: int
-        :return: a random protein msa
-        :rtype: numpy array
-        """
-        msa = np.empty((dep_msa, len_msa))
-        for i in range(0, dep_msa):
-            for j in range(0, len_msa):
-                msa[i, j] = self.__char_to_ascii(np.random.choice(self.tokens))
-        return msa
-
-    def __select_random_pairs(self, n=2, len_msa=10):
-        """ Simply selects n random columns in the msa for a given length of
-
-        :param n: number of columns to return, defaults to 2
-        :type n: int, optional
-        :param len_msa: the length of the msa, defaults to 10
-        :type len_msa: int, optional
-        :return: the indexes of the two chosen columns
-        :rtype: list
-        """
-        pairs = random.sample(range(0, len_msa), n)
-        sorted_pairs = np.sort(pairs)
-        return [x for x in sorted_pairs]
-
-    def __generate_covariate_pair(self, x, pair=[0, 0], mutate_threshold=0.8):
-        """Generate a pairwise co-evolving "point of contact"
-
-        :param x: ascii array
-        :type x: numpy array
-        :param pair: list of randomly chosen columns in the aschii matric, defaults to [0, 0]
-        :type pair: list, optional
-        :param mutate_threshold: residue in column will mutate if random number exceeds threshold, defaults to 0.8
-        :type mutate_threshold: float, optional
-        :return: ascii matric with co-varying amino acid columns
-        :rtype: numpy array
-        """
-        # Site-specific amino-acids
-        permitted_contacts = ['L', 'A']
-
-        # Specify the marginals for L and for A
-        marginals = [1 - mutate_threshold, mutate_threshold]
-
-        # Specify the permitted binding partners for  L and A
-        compliment = {'A': ['D', 'I', 'S'],
-                      'L': ['G', 'C', 'M']}
-
-        # Proabilistically specify the residues in the base column
-        alpha_tokens = random.choices(
-            permitted_contacts, k=np.shape(x)[0], weights=marginals)
-        ascii_tokens = [self.__char_to_ascii(x) for x in alpha_tokens]
-
-        # Make character selection using residue bias for the co-varying column
-        bias = [0.1, 0.3, 0.5]
-        alpha_compliments = [random.choices(compliment[x], k=1, weights=bias)[
-            0] for x in alpha_tokens]
-
-        # Convert to ascii
-        ascii_compliments = [self.__char_to_ascii(
-            x) for x in alpha_compliments]
-
-        # Generate the co-varying columns
-        x[:, pair[0]] = ascii_tokens
-        x[:, pair[1]] = ascii_compliments
-        return x
-
-    def __build_encoder(self):
-        """ Build and instantiate the char to ascii encoder
-
-        :return: the char to ascii lookup table
-        :rtype: dict
-        """
-        enc = []
-        for char in self.tokens:
-            enc.append(ord(char))
-        encoder = dict(zip(self.tokens, enc))
-        return encoder
-
-    def __build_decoder(self):
-        """ Build and instantiate the ascii to char decoder
-
-        :return: the ascii to char lookup table
-        :rtype: dict
-        """
-        enc = []
-        for char in self.tokens:
-            enc.append(ord(char))
-        decoder = dict(zip(enc, self.tokens))
-        return decoder
-
-    def get_anndata_field(self, anndata, field='STRING_ID1', pair_id=['A', 'B']):
-        """Extracts a column from a CSV file based on column name at a specific row
-
-        :param field: column name, defaults to 'STRING_ID1'
-        :type field: str, optional
-        :param pair_id: the two protein identifiers for the specific file, defaults to [0, 0]
-        :type pair_id: list, optional
-        :return: the subset data belonging to the column name given by "field"
-        :rtype: Series
-        """
-        # Subset the field from the row specified by pair_id
-        f = anndata.loc[(anndata['STRING_ID1'] == pair_id[0])
-                        & (anndata['STRING_ID2'] == pair_id[1])][field]
-        return f
-
-    def enforce_coevolution_signal(self, msa, pair_id, anndata):
-
-        # Convert MSA to Ascii
-        ascii_msa = np.array(self.__encode_char_to_ascii_matrix(msa))
-
-        # Get protein-A length
-        plen1 = int(self.get_anndata_field(
-            anndata=anndata, field='len1', pair_id=pair_id))
-
-        # Get protein-B length
-        plen2 = int(self.get_anndata_field(
-            anndata=anndata, field='len2', pair_id=pair_id))
-
-        print("protein lengths")
-        print(plen1, plen2)
-
-        # Fix residues to A in protein-A regions of MSA
-        n = 1
-        pair_1 = random.sample(range(0, plen1), n)[0]
-        pair_2 = random.sample(range(plen1 + 1, plen2), n)[0]
-        pair = (pair_1, pair_2)
-
-        print(pair)
-
-        # Enfoce correlated signal
-        ascii_corr_msa = self.__generate_covariate_pair(
-            x=ascii_msa, pair=pair, mutate_threshold=0.8)
-
-        # Reconvert MSA to alpha-numeric
-        alpha_corr_msa = self.__decode_ascii_matrix_to_char_matrix(
-            ascii_corr_msa)
-
-        # Return MSA as alignment object
-        alignment_msa = self.convert_msa_to_alignment(alpha_corr_msa)
-        return alignment_msa
-
-
-class ProteinParser:
-    def __init__(self, anndata_path, paired_msa_path):
-
-        # Initialize variables
-        self.anndata_path = anndata_path
-        self.paired_msa_path = paired_msa_path
-
-    def extract_neighbourhood(self, df, top_pairs):
-        frag_dict = {}
-        df_copy = df.copy()
-
-        for idx in df_copy.index:
-            try:
-                # Get obs
-                obs = df_copy.iloc[idx, :]
-                top_pair = obs.inter_dca_pairs[0]
-                top_pair = [int(x) for x in top_pair]
-                top_dca = obs.inter_dca_scores[0]
-
-                # Get the protein lengths
-                len_1 = df_copy.iloc[idx, :].len1
-                len_2 = df_copy.iloc[idx, :].len2
-
-                # Get pair id
-                pair_id = [df_copy.iloc[idx, :].STRING_ID1,
-                           df_copy.iloc[idx, :].STRING_ID2]
-
-                # Extract flanks
-                n_flanking = 5
-                top_residues = top_pairs[0]
-                smi_1, smi_2 = self.extract_flanking_residues(top_residues=top_residues,
-                                                              pair_id=pair_id, plens=[
-                                                                  len_1, len_2],
-                                                              n_flanking=n_flanking)
-
-                frag_dict[obs.id] = [top_dca, top_pair,
-                                     n_flanking, smi_1, smi_2]
+                obs = self.anndata.iloc[i, :n_samples]
+                pair_1 = obs['STRING_ID1']
+                pair_2 = obs['STRING_ID2']
+                label = obs['benchmark_status']
+
+                # Get alpha-fold structures
+                residue_1, residue_2 = GM.generate_alpha_fold_structures(
+                    string_to_af, pair_1, pair_2)
+
+                # Get proximity matrices
+                proximity_mask_1, dist_map_1 = GM.generate_proximity_matrix(
+                    seq_1=residue_1, seq_2=residue_1,
+                    angstroms=10, show=False)
+
+                proximity_mask_2, dist_map_2 = GM.generate_proximity_matrix(
+                    seq_1=residue_2, seq_2=residue_2,
+                    angstroms=10, show=False)
+
+                # Generate graphs
+                G_1, G_2 = GM.generate_graphs(
+                    adjacency_matrix_1=proximity_mask_1,
+                    adjacency_matrix_2=proximity_mask_2)
+
+                # Populate node attributes with netsurfp features
+                G_1, G_2 = GM.populate_graph_features(
+                    graph_1=G_1, graph_2=G_2,
+                    protein_1=pair_1, protein_2=pair_2,
+                    netsurf_path_dict=netsurf_d)
+
+                # Get DCA bridge connections
+                df, dca, dca_raw, dca_bridges = GM.get_position_wise_df(
+                    x=coevo_path, protein_1=pair_1,
+                    protein_2=pair_2)
+
+                # Make union of the graphs on dca brides
+                U = GM.link_graphs(
+                    graph_1=G_1, graph_2=G_2,
+                    dca_bridges=dca_bridges, show=False)
+
+                # Populate edge attributes
+                U = GM.populate_edge_dca(
+                    graph=U, x=coevo_path,
+                    protein_1=pair_1, protein_2=pair_2,
+                    feature_name='dca')
+
+                # Invert distance matrices
+                inv_dit_map_1 = GM.process_proximity(
+                    x=dist_map_1, max_value=10,
+                    mask=proximity_mask_1, invert=True)
+
+                inv_dit_map_2 = GM.process_proximity(
+                    x=dist_map_2, max_value=10,
+                    mask=proximity_mask_2, invert=True)
+
+                # Generate proximity matrices
+                d_1 = GM.get_proximity_dict(x=inv_dit_map_1, graph_name='a')
+                d_2 = GM.get_proximity_dict(x=inv_dit_map_2, graph_name='b')
+
+                # Combine the two dicts
+                d_1.update(d_2)
+
+                # Finally populate the prixmity edge features
+                U = GM.populate_edge_proximity(U, d_1)
+
+                # Save the graph to file
+                GM.save_graph_data(graph=U, protein_1=pair_1,
+                                protein_2=pair_2, label=label)
             except:
+                print('Skipping... something went wrong.')
                 pass
-
-        return frag_dict
-
-    def extract_flanking_residues(self,
-                                  pair_id,
-                                  top_residues,
-                                  plens,
-                                  n_flanking):
-        """Get the residues positions n steps to the 
-        left, and right of the top scoring DCA residue.
-
-        :param anndata_path: path to the annotation dataframe
-        :type anndata_path: string
-        :param paired_msa_path: path to the paired msa sets
-        :type paired_msa_path: string
-        :param pair_id: string conraininf protein ID's in the form 'xandy'
-        :type pair_id: string
-        :param top_residues: top-1 DCA interacting residue pair integers
-        :type top_residues: list
-        :param plens: list containing lengths of of both proteins
-        :type plens: list
-        :param n_flanking: integer specifying the number of flanking residues
-        :type n_flanking: int
-        :return: The SMIELS string containing the the subset neighborhood pf reidues around top-1 DCA pair
-        :rtype: string
-        """
-
-        flanks = []
-        dl = DcaLab(anndata_path=self.anndata_path)
-
-        for i in range(0, 2):
-            # Extract the flanking integers
-            pos_left = top_residues[i]
-            pos_right = top_residues[i]
-
-            # Instantiate empty lists
-            right_flank = []
-            left_flank = []
-            for _ in range(0, n_flanking):
-                pos_right += 1
-                pos_left -= 1
-
-                # Append residues n-steps to the right of top dca scoring pair
-                if pos_right >= int(top_residues[i]) and ~(pos_right > int(plens[i])):
-                    right_flank.append(pos_right)
-
-                # Append residues n-steps to the left of top dca scoring pair
-                if pos_left <= int(top_residues[i]) and pos_left >= 0:
-                    left_flank.append(pos_left)
-
-            # Flip the oder of the left flank
-            left_flank = left_flank[::-1]
-            flanks[i] = left_flank + [top_residues[i]] + right_flank
-
-        # The next part of the functions
-        ids = "and".join([pair_id[0], pair_id[1]])
-        dca_file = ids + ".fasta"
-        msa_file_path = os.path.join(self.paired_msa_path, dca_file)
-        coupler = dl.generate_frequency_coupler(
-            msa_file_path=msa_file_path)
-        msa = coupler.convert_msa_to_df()
-        msa = msa.iloc[0, :]
-
-        # Extract protein regions
-        p1 = "".join(msa.iloc[flanks[0]].values)
-        p2 = "".join(msa.iloc[flanks[1]].values)
-        return p1, p2
-
-
+            
 class SloppyStructureBuilder(Bio.PDB.StructureBuilder.StructureBuilder):
     """Cope with resSeq < 10,000 limitation by just incrementing internally.
 
@@ -1646,7 +695,6 @@ class SloppyStructureBuilder(Bio.PDB.StructureBuilder.StructureBuilder):
         self.chain.add(residue)
         self.residue = residue
 
-
 class SloppyPDBIO(Bio.PDB.PDBIO):
     """PDBIO class that can deal with large pdb files as used in MD simulations
 
@@ -1711,7 +759,6 @@ class SloppyPDBIO(Bio.PDB.PDBIO):
         )
         return self._ATOM_FORMAT_STRING % args
 
-
 class GCN(torch.nn.Module):
     def __init__(self, hidden_channels=64):
         super(GCN, self).__init__()
@@ -1773,203 +820,7 @@ class GCN(torch.nn.Module):
         return x
 
 
-def get_structure(pdbfile, pdbid="system"):
-
-    # convenience functions
-    sloppyparser = Bio.PDB.PDBParser(
-        PERMISSIVE=True, structure_builder=SloppyStructureBuilder()
-    )
-
-    return sloppyparser.get_structure(pdbid, pdbfile)
 
 
-def get_dca_stats(df):
-    """This function will iterate through every row of a pandas dataframe and return the DCA and frequency matrix stats.
 
 
-    :param df: Annotation dataframe (anndata) object
-    :type df: df
-    :return: Collection of states on DCA AND Frequency matrix: top_dca_scores, frequency_variances, and frequeny ranks.
-    :rtype: list
-    """
-
-    # Paths
-    anndata_path = '/mnt/mnemo1/sum02dean/dean_mnt/projects/ecoli/annotation/all_ppi_info_frame.csv'
-    paired_msa_path = '/mnt/mnemo1/sum02dean/dean_mnt/projects/ecoli/paired_msa'
-    cache_dir_path = '/mnt/mnemo1/sum02dean/dean_mnt/projects/configs'
-
-    # Initialize empty containers
-    top_dca_scores = []
-    frequency_variances = []
-    ranks = []
-    flat_freqs = []
-    id_list = []
-
-    for x in df.values:
-        # Get the file name based on STRING ID
-        ids = "and".join([x[0], x[1]])
-        id_list.append(ids)
-        dca_file = ids + ".fasta"
-        msa_file_path = os.path.join(paired_msa_path, dca_file)
-
-        # Exrtact DCA score
-        dl = DcaLab(anndata_path=anndata_path)
-        coupler = dl.generate_frequency_coupler(msa_file_path=msa_file_path,
-                                                cache_dir_path=cache_dir_path)
-
-        # Return the DCA scores if ppre-computed
-        inter_dca, _ = coupler.get_dca_scores()
-
-        # Subest the pairs
-        dca_score = inter_dca[0, -1]
-        pairs = inter_dca[:, 0:2]
-        top_pair = coupler.subset_top_dca_couplings(pairs[0, 0:2])
-
-        # Compute the frequency matrix
-        freq_mat = coupler.get_frequency_matrix(top_pair)
-        mat_rank = matrix_rank(freq_mat)
-        flattened = freq_mat.flatten()
-        mat_var = np.var(flattened[flattened > 0])
-
-        # Collect stats
-        top_dca_scores.append(dca_score)
-        ranks.append(mat_rank)
-        frequency_variances.append(mat_var)
-        flat_freqs.append(flattened)
-
-    stats = pd.DataFrame.from_dict({'id': id_list, 'dca': top_dca_scores, 'ranks': ranks,
-                                    'variance': frequency_variances, 'frequencies': flat_freqs})
-
-    return stats
-
-
-def get_dca_stats_with_figs(df, save_fig=True):
-    """This function will iterate through every row of a pandas dataframe and return the DCA and frequency matrix stats.
-
-
-    :param df: Annotation dataframe (anndata) object
-    :type df: df
-    :return: Collection of stats on DCA and Frequency matrix: top_dca_scores, frequency_variances, and frequeny ranks.
-    :rtype: list
-    """
-
-    # Paths
-    anndata_path = '/mnt/mnemo1/sum02dean/dean_mnt/projects/ecoli/annotation/all_ppi_info_frame.csv'
-    paired_msa_path = '/mnt/mnemo1/sum02dean/dean_mnt/projects/ecoli/paired_msa'
-
-    # Initialize empty containers
-    top_dca_scores = []
-    frequency_variances = []
-    ranks = []
-    flat_freqs = []
-    id_list = []
-    figs = []
-
-    for x in df.values:
-        # Get the file name based on STRING ID
-        ids = "and".join([x[0], x[1]])
-        id_list.append(ids)
-        dca_file = ids + ".fasta"
-        msa_file_path = os.path.join(paired_msa_path, dca_file)
-
-        # Exrtact DCA score
-        coupler = fc(msa_file_path=msa_file_path,
-                     annotation_file_path=anndata_path)
-
-        # Return the DCA scores if ppre-computed
-        inter_dca, _ = coupler.get_dca_scores()
-
-        # Subest the pairs
-        dca_score = inter_dca[0, -1]
-        pairs = inter_dca[:, 0:2]
-        top_pair = coupler.subset_top_dca_couplings(pairs[0, 0:2])
-
-        # Compute the frequency matrix
-        freq_mat = coupler.get_frequency_matrix(top_pair)
-        mat_rank = matrix_rank(freq_mat)
-        flattened = freq_mat.flatten()
-        mat_var = np.var(flattened[flattened > 0])
-
-        # Collect stats
-        top_dca_scores.append(dca_score)
-        ranks.append(mat_rank)
-        frequency_variances.append(mat_var)
-        flat_freqs.append(flattened)
-
-        if save_fig:
-            f = coupler.visualize_frequency_matrix()
-            figs.append(f)
-        else:
-            figs.append(0)
-
-    stats = pd.DataFrame.from_dict({'id': id_list, 'dca': top_dca_scores, 'ranks': ranks,
-                                    'variance': frequency_variances, 'frequencies': flat_freqs, 'figs': figs})
-
-    return stats
-
-
-def parallelize_dataframe(df, func, n_cores=20):
-    """This script takes a function 'func' and applies it to a n_obs/n_cores chunks 
-       of a pandas DataFrame, it was purpose built for the func get_dca_stats.py.
-
-    :param df: pandas annotation dataframe for PPI all info
-    :type df: pandas DataFrame
-    :param func: function to parallelize
-    :type func: object
-    :param n_cores: number of cores to parallelize the process over, defaults to 8
-    :type n_cores: int, optional
-    :return: pandas DataFrame containing the concatenated outputs of get_dca_stats()
-    :rtype: pandas DataFrame
-    """
-
-    # Split the pandas DataFrame into n jobs
-    df_split = np.array_split(df, n_cores)
-    p = Pool(n_cores)
-
-    # Aggregate the outputs of the parallel pool as df
-    y = pd.concat(p.map(func, df_split))
-    y.reset_index(inplace=True, drop=True)
-
-    # Close the process
-    p.close()
-    p.join()
-    return y
-
-
-def get_label(file, labels):
-    pair_1 = file.split('/')[-1]
-    pair_1, pair_2 = pair_1.split("and")
-    pair_1 = pair_1.replace(".gpickle", "")
-    pair_2 = pair_2.replace(".gpickle", "")
-    l = int(labels.loc[(labels.protein_1 == pair_1)
-            & (labels.protein_2 == pair_2)].label)
-    return file, l
-
-
-def read_graphs(file_set):
-    g_list = []
-    for i, file in enumerate(file_set):
-        G = nx.read_gpickle(file)
-        g_list.append(G)
-    return g_list
-
-
-def format_graphs(graphs, label=1):
-    graph_list = []
-    # Convert into pytorch geoetric dataset: Positive
-    for i, x in enumerate(tqdm(graphs)):
-        F = nx.convert_node_labels_to_integers(x)
-        for (n1, n2, d) in F.edges(data=True):
-            d.clear()
-        data = convert.from_networkx(F, group_edge_attrs=None)
-        data.y = torch.FloatTensor([label])
-        graph_list.append(data)
-    return graph_list
-
-
-def binary_acc(y_pred, y_test):
-    y_pred_tag = torch.round(torch.sigmoid(y_pred))
-    correct_results_sum = (y_pred_tag == y_test).sum().float()
-    acc = correct_results_sum / y_test.shape[0]
-    acc = torch.round(acc * 100)
-    return acc
