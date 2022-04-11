@@ -57,6 +57,7 @@ class GraphMaker:
             dca_score = []
             pos_1 = []
             pos_2 = []
+        return
 
     def extract_data(self, df):
         """Modifies a globally defined dictionary with protein names,
@@ -72,10 +73,10 @@ class GraphMaker:
         return None
 
     def get_position_wise_df(self, x, protein_1, protein_2):
-      """Generates an inter protein dca score dictionary."""
+        """Generates an inter protein dca score dictionary."""
 
         # Intialise D dict
-        _ = self.extract_data(x, )
+        _ = self.extract_data(x)
 
         dca_dict = {}
         protein_pair = self.D["and".join([protein_1, protein_2])]
@@ -544,6 +545,82 @@ class GraphMaker:
                 # If row already present, don't write
                 if row_check not in existing_lines:
                     writer.writerow(row)
+    
+    def get_computational_graph(self, string_to_af, coevo_path, netsurf_d, n_samples=-1):
+        # Loop over all instances in the anndata (annotation data) file
+        for i in tqdm(range(rows)):
+            try:
+                obs = self.anndata.iloc[i, :n_samples]
+                pair_1 = obs['STRING_ID1']
+                pair_2 = obs['STRING_ID2']
+                label = obs['benchmark_status']
+
+                # Get alpha-fold structures
+                residue_1, residue_2 = GM.generate_alpha_fold_structures(
+                    string_to_af, pair_1, pair_2)
+
+                # Get proximity matrices
+                proximity_mask_1, dist_map_1 = GM.generate_proximity_matrix(
+                    seq_1=residue_1, seq_2=residue_1,
+                    angstroms=10, show=False)
+
+                proximity_mask_2, dist_map_2 = GM.generate_proximity_matrix(
+                    seq_1=residue_2, seq_2=residue_2,
+                    angstroms=10, show=False)
+
+                # Generate graphs
+                G_1, G_2 = GM.generate_graphs(
+                    adjacency_matrix_1=proximity_mask_1,
+                    adjacency_matrix_2=proximity_mask_2)
+
+                # Populate node attributes with netsurfp features
+                G_1, G_2 = GM.populate_graph_features(
+                    graph_1=G_1, graph_2=G_2,
+                    protein_1=pair_1, protein_2=pair_2,
+                    netsurf_path_dict=netsurf_d)
+
+                # Get DCA bridge connections
+                df, dca, dca_raw, dca_bridges = GM.get_position_wise_df(
+                    x=coevo_path, protein_1=pair_1,
+                    protein_2=pair_2)
+
+                # Make union of the graphs on dca brides
+                U = GM.link_graphs(
+                    graph_1=G_1, graph_2=G_2,
+                    dca_bridges=dca_bridges, show=False)
+
+                # Populate edge attributes
+                U = GM.populate_edge_dca(
+                    graph=U, x=coevo_path,
+                    protein_1=pair_1, protein_2=pair_2,
+                    feature_name='dca')
+
+                # Invert distance matrices
+                inv_dit_map_1 = GM.process_proximity(
+                    x=dist_map_1, max_value=10,
+                    mask=proximity_mask_1, invert=True)
+
+                inv_dit_map_2 = GM.process_proximity(
+                    x=dist_map_2, max_value=10,
+                    mask=proximity_mask_2, invert=True)
+
+                # Generate proximity matrices
+                d_1 = GM.get_proximity_dict(x=inv_dit_map_1, graph_name='a')
+                d_2 = GM.get_proximity_dict(x=inv_dit_map_2, graph_name='b')
+
+                # Combine the two dicts
+                d_1.update(d_2)
+
+                # Finally populate the prixmity edge features
+                U = GM.populate_edge_proximity(U, d_1)
+
+                # Save the graph to file
+                GM.save_graph_data(graph=U, protein_1=pair_1,
+                                protein_2=pair_2, label=label)
+            except:
+                print('Skipping... something went wrong.')
+                pass
+
 
 
 if __name__ == '__main__':
@@ -565,8 +642,7 @@ if __name__ == '__main__':
     pdb_files_for_PDB = '/mnt/mnemo6/damian/STRING_freeze_v11.5/pdb/data/biounit/coordinates/divided/'
 
     # Load data
-    new_data = pd.read_csv(os.path.join(root, no_phyla), sep='\t', header=None)
-    phyla_data = pd.read_csv(os.path.join(root, phyla), sep='\t', header=None)
+    coevo_path = pd.read_csv(os.path.join(root, no_phyla), sep='\t', header=None)
     meta_data = pd.read_csv(os.path.join(root, meta), sep='\t', header=0)
 
     # Netsurf outputs
@@ -580,81 +656,8 @@ if __name__ == '__main__':
     # Load metadata
     meta_data = pd.read_csv(os.path.join(root, meta), sep='\t')
 
-    # Instantiate the graph maker class
+    # Instantiate the graph maker class and genetate graphs
     GM = GraphMaker(anndata_path=os.path.join(root, meta))
-    anndata = GM.anndata
-    rows, cols = np.shape(anndata)
+    GM.get_computational_graph(string_to_af, coevo_path, netsurf_d=netsurf_d, n_samples=-1)
 
-    # Loop over all instances in the anndata (annotation data) file
-    for i in tqdm(range(rows)):
-        try:
-            obs = anndata.iloc[i, :]
-            pair_1 = obs['STRING_ID1']
-            pair_2 = obs['STRING_ID2']
-            label = obs['benchmark_status']
-
-            # Get alpha-fold structures
-            residue_1, residue_2 = GM.generate_alpha_fold_structures(
-                string_to_af, pair_1, pair_2)
-
-            # Get proximity matrices
-            proximity_mask_1, dist_map_1 = GM.generate_proximity_matrix(
-                seq_1=residue_1, seq_2=residue_1,
-                angstroms=10, show=False)
-
-            proximity_mask_2, dist_map_2 = GM.generate_proximity_matrix(
-                seq_1=residue_2, seq_2=residue_2,
-                angstroms=10, show=False)
-
-            # Generate graphs
-            G_1, G_2 = GM.generate_graphs(
-                adjacency_matrix_1=proximity_mask_1,
-                adjacency_matrix_2=proximity_mask_2)
-
-            # Populate node attributes with netsurfp features
-            G_1, G_2 = GM.populate_graph_features(
-                graph_1=G_1, graph_2=G_2,
-                protein_1=pair_1, protein_2=pair_2,
-                netsurf_path_dict=netsurf_d)
-
-            # Get DCA bridge connections
-            df, dca, dca_raw, dca_bridges = GM.get_position_wise_df(
-                x=new_data, protein_1=pair_1,
-                protein_2=pair_2)
-
-            # Make union of the graphs on dca brides
-            U = GM.link_graphs(
-                graph_1=G_1, graph_2=G_2,
-                dca_bridges=dca_bridges, show=False)
-
-            # Populate edge attributes
-            U = GM.populate_edge_dca(
-                graph=U, x=new_data,
-                protein_1=pair_1, protein_2=pair_2,
-                feature_name='dca')
-
-            # Invert distance matrices
-            inv_dit_map_1 = GM.process_proximity(
-                x=dist_map_1, max_value=10,
-                mask=proximity_mask_1, invert=True)
-
-            inv_dit_map_2 = GM.process_proximity(
-                x=dist_map_2, max_value=10,
-                mask=proximity_mask_2, invert=True)
-
-            # Generate proximity matrices
-            d_1 = GM.get_proximity_dict(x=inv_dit_map_1, graph_name='a')
-            d_2 = GM.get_proximity_dict(x=inv_dit_map_2, graph_name='b')
-
-            # Combine the two dicts
-            d_1.update(d_2)
-
-            # Finally populate the prixmity edge features
-            U = GM.populate_edge_proximity(U, d_1)
-
-            # Save the graph to file
-            GM.save_graph_data(graph=U, protein_1=pair_1,
-                            protein_2=pair_2, label=label)
-        except:
-            print('Skipping... something went wrong.')
-            pass
+    

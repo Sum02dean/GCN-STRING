@@ -29,8 +29,8 @@ nsp_seq = "/mnt/mnemo6/tao/PPI_Coevolution/STRING_data_11.5/511145_netsurfp2_out
 
 # n_samples: use -1 for all
 n_samples = 10
-gm = GraphMaker(anndata_path=anndata_path)
-graphs, labels = gm.get_computational_graph(n_samples=n_samples, string_to_af=ecoli_ext_string_to_af,
+GM = GraphMaker(anndata_path=anndata_path)
+graphs, labels = GM.get_computational_graph(n_samples=n_samples, string_to_af=ecoli_ext_string_to_af,
                                             ns_path_msa=nsp_msa,
                                             ns_path_seq=nsp_seq,
                                             coevo_path=coevo_path,
