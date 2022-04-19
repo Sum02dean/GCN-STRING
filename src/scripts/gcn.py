@@ -409,7 +409,6 @@ if __name__ == '__main__':
     # Save the ROC
     fig_file_name =  f'{model_name}.png'
     prediction_file_name =  f'{model_name}_predictions.csv'
-
     plt.savefig(os.path.join(output_directory,fig_file_name))
 
     # Save predictions and labels
