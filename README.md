@@ -2,7 +2,7 @@
 
 
 # Predict Phyiscal Protein Interactions using Graph Neural Networks
-This repository contains code predicting physical interaction of proetins using directed coupling analysis and graph nerual netowkrs. 
+This repository contains code predicting physical interaction of proteins using direct coupling analysis and graph neural networks. 
 
 ## Setup:
 This code was designed to run on the [s3it](https://apps.s3it.uzh.ch/) cluster to avoid out of memory (OOM) issues.
