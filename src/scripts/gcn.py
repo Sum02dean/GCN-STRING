@@ -147,7 +147,7 @@ class MyDataset(Dataset):
         return x
 
     def get_spektral_graph(self, x, a, y, e=None):
-        if self.use_edge_data is not None:
+        if self.use_edge_data:
             return Graph(x=x, a=a, y=y, e=e)
         else:
             return Graph(x=x, a=a, y=y)
@@ -169,7 +169,11 @@ class MyDataset(Dataset):
         edge_features = self.get_edge_features(graph, to_sparse=False)
         node_features = self.get_node_features(graph, feature_name='x')
         graph_labels = np.array(label)
-        SG = self.get_spektral_graph(x=node_features, e=edge_features, a=adjacency_matrix, y=graph_labels)
+
+        if self.self.use_edge_data:
+            SG = self.get_spektral_graph(x=node_features, e=edge_features, a=adjacency_matrix, y=graph_labels)
+        else:
+            SG = self.get_spektral_graph(x=node_features, a=adjacency_matrix, y=graph_labels)
         return SG
     
     def read_graph(self, file):
@@ -193,12 +197,42 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GCN_STRING')
     parser.add_argument('-mn', '--model_name', type=str, metavar='',
                         required=True, default='output_0', help='name of the model')
+
+    parser.add_argument('-o', '--output_directory', type=str, metavar='',
+                        required=True, default='outputs', help='name of the model')
+
+    parser.add_argument('-bs', '--batch_size', type=int, metavar='',
+                        required=True, default=50, help='number of samples per batch')
+
+    parser.add_argument('-lr', '--learning_rate', type=float, metavar='',
+                        required=True, default=0.0002, help='earning rate initialization')
+
+    parser.add_argument('-epochs', '--e', type=int, metavar='',
+                        required=True, default=50, help='number of epochs to train for')
+
+    parser.add_argument('-ns', '--num_samples', type=int, metavar='',
+                        required=True, default=10834, help='number of samples to train on') 
+
+    # Collect args
     args = parser.parse_args()
-    file_name = args.model_name
+    model_name = str(args.model_name)
+    output_directory = str(args.output_directory)
+    batch_size = int(args.batch_size)
+    learning_rate = float(args.learning_rate)
+    epochs = int(args.epochs)
+    samples = int(args.num_samples)
+
+    # Create output directory
+    isExist = os.path.exists(os.path.join(output_directory))
+    if not isExist:
+        # Create it
+        os.makedirs(os.path.join(output_directory))
+        print("{} directory created.".format(
+            os.path.join(output_directory)))
 
     # Import the data
-    graph_dir_path = '../scripts/dca_graph_data'
-    labels_dir_path = '../scripts/dca_graph_labels'
+    graph_dir_path = '../data/graph_data'
+    labels_dir_path = '../data/graph_labels'
 
     graph_files = glob.glob(os.path.join(graph_dir_path, '*'))
     graph_labels = glob.glob(os.path.join(labels_dir_path, '*'))
@@ -232,15 +266,14 @@ if __name__ == '__main__':
     class_labels = pos_labels + neg_labels
 
     # NOTE: This part takes a very long time
-    samples = len(balanced_graphs)
     dataset = MyDataset(files=balanced_graphs, labels=class_labels, n_samples=samples)
 
     # Split into train and test
-    train_idx = np.random.choice(a=[False, True], size=len(balanced_graphs))
+    train_idx = np.random.choice(a=[False, True], size=samples)
     val_idx = ~train_idx
 
     # Convert range to array 
-    full_idx = np.array(range(len(balanced_graphs)))
+    full_idx = np.array(range(samples))
 
     # Grab indices using Boolean array
     tr_idx = full_idx[train_idx]
@@ -251,12 +284,10 @@ if __name__ == '__main__':
     data_te = dataset[te_idx]
 
     # Define model parameters
-    batch_size = 50
-    learning_rate = 0.0002
-    epochs = 50
+    n_labels = 2
     weights = []
     performance = []
-    n_labels = 2
+  
 
     # TODO In order to use checkpointing as a callback. Need to refactor the code 
     # ... using class based keras API as shown here: 
@@ -289,7 +320,6 @@ if __name__ == '__main__':
     def train_step(inputs, target):
         """Runs the neural network training using tensorflow backend
         """
-        print('Training network...')
         with tf.GradientTape() as tape:
             predictions = model(inputs, training=True)
             loss = loss_fn(target, predictions) + sum(model.losses)        
@@ -325,6 +355,7 @@ if __name__ == '__main__':
     # Run training loop        
     epoch = step = 0
     results = []
+    print('Training network...')
     for batch in loader_tr:
         step += 1
         loss, acc = train_step(*batch)
@@ -356,10 +387,10 @@ if __name__ == '__main__':
     labels = []
     for graph in data_te:
         labels.append(graph.y[0])
-    l = [x for x in pos_probas]
+    l = [x for x in probas]
 
     # Plot ROC
-    fpr, tpr, _ = roc_curve(labels,probas)
+    fpr, tpr, _ = roc_curve(labels, probas)
     roc_auc = auc(fpr, tpr)
     lw = 0.8
     plt.figure()
@@ -370,7 +401,19 @@ if __name__ == '__main__':
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
     plt.title("Receiver operating characteristic for DCA-GCN")
-    plt.savefig(f'{model_name}.png')
     plt.legend(loc="lower right")
-    plt.show()
-    plt.show()
+
+    # Save the ROC
+    fig_file_name =  f'{model_name}.png'
+    prediction_file_name =  f'{model_name}_predictions.csv'
+
+    plt.savefig(os.path.join(output_directory,fig_file_name))
+
+    # Save predictions and labels
+    output_dict = {}
+    output_dict['probability'] = probas
+    output_dict['labels'] = labels
+    df = pd.DataFrame(output_dict)
+    df.to_csv(os.path.join(output_directory, prediction_file_name))
+
+
