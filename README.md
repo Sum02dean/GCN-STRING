@@ -5,7 +5,7 @@
 This repository contains code predicting physical interaction of proetins using directed coupling analysis and graph nerual netowkrs. 
 
 ## Setup:
-This code was designed to run on the CPU cluster at [s3it](https://apps.s3it.uzh.ch/) to avoid out of memory (OOM) issues.
+This code was designed to run on the [s3it](https://apps.s3it.uzh.ch/) cluster to avoid out of memory (OOM) issues.
 
 ## GPU Usage:
 Because of the large datasets involved data-loading and training can take a large amount of time.

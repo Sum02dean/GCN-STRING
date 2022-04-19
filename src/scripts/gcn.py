@@ -63,14 +63,16 @@ class MyDataset(Dataset):
     A dataset generator fpr protein bi-molecular graphs.
     The task is to classify whether or not the proteins are physically interacting.
     """
+    # TODO: FIgure out how to include edfge data without error!
 
-    def __init__(self, n_samples=100, labels=[1], **kwargs):
+    def __init__(self, n_samples=100, labels=[1], use_edge_data=False, **kwargs):
         for name, value in kwargs.items():
             setattr(self, name, value)
             
         # Define custom attributes here
         self.n_samples = n_samples
         self.labels=labels
+        self = use_edge_data
         super().__init__(**kwargs)
     
     # Nested read function
@@ -144,7 +146,11 @@ class MyDataset(Dataset):
         return x
 
     def get_spektral_graph(self, x, a, y, e=None):
-        return Graph(x=x, a=a, y=y, e=e)
+        if self.use_edge_data:
+            return Graph(x=x, a=a, y=y, e=e)
+        else:
+            return Graph(x=x, a=a, y=y, e=e)
+
        
 
     def generate_spektral_graph(self, graph, label):
@@ -247,6 +253,7 @@ if __name__ == '__main__':
     # TODO In order to use checkpointing as a callback. Need to refactor the code 
     # ... using class based keras API as shown here: 
     # https://github.com/danielegrattarola/spektral/blob/master/examples/graph_prediction/tud_mincut.py
+    
     checkpoint_filepath = 'checkpoint/'
     model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath=checkpoint_filepath,
