@@ -14,6 +14,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc
 from scipy.sparse import coo_matrix
+import argparse
 
 """GCN implemented using spektral: https://graphneural.network/
     Neural network method: https://arxiv.org/pdf/2011.08843.pdf
@@ -72,7 +73,7 @@ class MyDataset(Dataset):
         # Define custom attributes here
         self.n_samples = n_samples
         self.labels=labels
-        self = use_edge_data
+        self.use_edge_data = use_edge_data
         super().__init__(**kwargs)
     
     # Nested read function
@@ -146,10 +147,10 @@ class MyDataset(Dataset):
         return x
 
     def get_spektral_graph(self, x, a, y, e=None):
-        if self.use_edge_data:
+        if self.use_edge_data is not None:
             return Graph(x=x, a=a, y=y, e=e)
         else:
-            return Graph(x=x, a=a, y=y, e=e)
+            return Graph(x=x, a=a, y=y)
 
        
 
@@ -187,6 +188,13 @@ class MyDataset(Dataset):
         return F   
 
 if __name__ == '__main__':
+
+    # Grab args
+    parser = argparse.ArgumentParser(description='GCN_STRING')
+    parser.add_argument('-mn', '--model_name', type=str, metavar='',
+                        required=True, default='output_0', help='name of the model')
+    args = parser.parse_args()
+    file_name = args.model_name
 
     # Import the data
     graph_dir_path = '../scripts/dca_graph_data'
@@ -253,7 +261,7 @@ if __name__ == '__main__':
     # TODO In order to use checkpointing as a callback. Need to refactor the code 
     # ... using class based keras API as shown here: 
     # https://github.com/danielegrattarola/spektral/blob/master/examples/graph_prediction/tud_mincut.py
-    
+
     checkpoint_filepath = 'checkpoint/'
     model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath=checkpoint_filepath,
@@ -362,7 +370,7 @@ if __name__ == '__main__':
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
     plt.title("Receiver operating characteristic for DCA-GCN")
-    plt.savefig('ROC curve (spektral GCN).png')
+    plt.savefig(f'{model_name}.png')
     plt.legend(loc="lower right")
     plt.show()
     plt.show()
