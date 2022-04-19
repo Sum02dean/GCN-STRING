@@ -29,13 +29,11 @@ cd src/scripts
 bash run_graph_prediction.sh
 ```
 
-### Models
+### Model
 
 | Models | Resources |
 | ------ | ------ | 
-| XGBoost | [XGBoost Documentation](https://xgboost.readthedocs.io/en/stable/) |
-| Bambi | [Bambi Documentation](https://bambinos.github.io/bambi/main/index.html) |
-| Neural Net (Pytorch) | [Pytorch Documentation](https://pytorch.org/) |
+| Neural Net (Spektral GCN) | [Spektral model](https://github.com/danielegrattarola/spektral/blob/master/examples/graph_prediction/general_gnn.py) |
 
 ### Potential conflicts
 ```py
