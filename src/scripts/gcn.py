@@ -19,22 +19,12 @@ from scipy.sparse import coo_matrix
     Neural network method: https://arxiv.org/pdf/2011.08843.pdf
 """
 
-# Script specific functions and methods
-@tf.function(input_signature=loader_tr.tf_signature(), experimental_relax_shapes=True)
-@tf.autograph.experimental.do_not_convert
-def train_step(inputs, target):
-    """Runs the neural network training using tensorflow backend
-    """
-    
-    with tf.GradientTape() as tape:
-        predictions = model(inputs, training=True)
-        loss = loss_fn(target, predictions) + sum(model.losses)        
-    
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    acc = tf.reduce_mean(categorical_accuracy(target, predictions))
-    return loss, acc
+# Set device as GPU if available
+physical_devices = tf.config.list_physical_devices("GPU")
+if len(physical_devices) > 0:
+    tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
+# Script specific functions and methods
 def get_label(file, labels):
     """Converts labels to label list (required for model)
 
@@ -52,7 +42,6 @@ def get_label(file, labels):
     l = int(labels.loc[(labels.protein_1 == pair_1) & (labels.protein_2 == pair_2)].label)
     return file, l
 
-
 def binary_acc(y_pred, y_test):
     """Compute the accuray between predictions and labels   
 
@@ -69,70 +58,6 @@ def binary_acc(y_pred, y_test):
     acc = correct_results_sum/y_test.shape[0]
     acc = torch.round(acc * 100)
     return acc, y_pred_tag, probas
-
-
-def read_graphs(graphs):
-    """Reads graph_data files to a networkx file
-
-    :param graphs: list or set of all graph files 
-    :type graphs: iterable    
-    :return: list of networkx graphs
-    :rtype: networkx graph objects
-    """
-    l = []
-    with tqdm(len(graphs)) as pbar:
-        for graph in graphs:
-            G = nx.read_gpickle(graph)
-            l.append(G)
-            pbar.update(1)
-        return l
-
-
-def format_graphs(graphs):
-    """Cleans nx graphs and add edge features correctly
-    :param graphs: list of networkx graphs
-    :type graphs: list of nx graphs
-    :return: re-formatted graphs
-    :rtype: formatted nx graph objects
-    """
-    l = []
-    with tqdm(len(graphs)) as pbar:
-        for graph in graphs:
-            # Convert into pytorch geoetric dataset
-            F = nx.convert_node_labels_to_integers(graph)
-            # nx default addition edge name - undesirbale
-            att = 'weight' 
-            for (n1, n2, d) in F.edges(data=True):
-                if att in d:
-                    # To clear specific edge data
-                    d.pop(att, None) 
-            l.append(F)
-            pbar.update(1)
-        return l
-
-
-def evaluate(loader):
-    """Runs evaluation of the model on a provdided data-generation
-    """
-    output = []
-    preds = []
-    step = 0
-    while step < loader.steps_per_epoch:
-        step += 1
-        inputs, target = loader.__next__()
-        pred = model(inputs, training=False)
-        preds.append(pred)
-        outs = (
-            loss_fn(target, pred),
-            tf.reduce_mean(categorical_accuracy(target, pred)),
-            len(target),  # Keep track of batch size
-        )
-  
-        output.append(outs)
-        if step == loader.steps_per_epoch:
-            output = np.array(output)
-            return np.average(output[:, :-1], 0, weights=output[:, -1]), preds
-
 class MyDataset(Dataset):
     """
     A dataset generator fpr protein bi-molecular graphs.
@@ -163,7 +88,11 @@ class MyDataset(Dataset):
             return SG
 
         # We must return a list of Graph objects
-        return [make_graph(idx=idx) for idx in range(self.n_samples)]
+        l = []
+        for idx in tqdm(range(self.n_samples)):
+            g = make_graph(idx=idx)
+            l.append(g)
+        return l
 
     def get_adjacency(self, graph, to_sparse=True):
         """Retrieves the adjacency matrix for a single graph    
@@ -215,10 +144,8 @@ class MyDataset(Dataset):
         return x
 
     def get_spektral_graph(self, x, a, y, e=None):
-        if e != None:
-            return Graph(x=x, a=a, y=y, e=e)
-        else:
-            return Graph(x=x, a=a, y=y)
+        return Graph(x=x, a=a, y=y, e=e)
+       
 
     def generate_spektral_graph(self, graph, label):
         """Generates a spektral graph 
@@ -237,7 +164,21 @@ class MyDataset(Dataset):
         graph_labels = np.array(label)
         SG = self.get_spektral_graph(x=node_features, e=edge_features, a=adjacency_matrix, y=graph_labels)
         return SG
+    
+    def read_graph(self, file):
+        G = nx.read_gpickle(file)
+        return G
         
+    def format_graph(self, graph):
+        # Convert str names to ints
+        F = nx.convert_node_labels_to_integers(graph)
+        # nx default addition edge name - undesirbale
+        att = 'weight' 
+        for (n1, n2, d) in F.edges(data=True):
+            if att in d:
+                # To clear specific edge data
+                d.pop(att, None) 
+        return F   
 
 if __name__ == '__main__':
 
@@ -272,19 +213,11 @@ if __name__ == '__main__':
     assert(len(positives)==len(negatives))
     assert(len(pos_labels)==len(neg_labels))
 
-    pos_graphs = read_graphs(positives)
-    neg_graphs = read_graphs(negatives)
-
-    pos_graphs = format_graphs(pos_graphs)
-    neg_graphs = format_graphs(neg_graphs)
-
-    sg_pos = generate_spektral_graphs(pos_graphs, 1.0)
-    sg_neg = generate_spektral_graphs(neg_graphs, 0.0)
-
+    # Balance the graph datasets
     balanced_graphs = positives + negatives
     class_labels = pos_labels + neg_labels
 
-    # This part takes a very long time
+    # NOTE: This part takes a very long time
     samples = len(balanced_graphs)
     dataset = MyDataset(files=balanced_graphs, labels=class_labels, n_samples=samples)
 
@@ -303,6 +236,7 @@ if __name__ == '__main__':
     data_tr = dataset[tr_idx]
     data_te = dataset[te_idx]
 
+    # Define model parameters
     batch_size = 50
     learning_rate = 0.0002
     epochs = 50
@@ -310,6 +244,9 @@ if __name__ == '__main__':
     performance = []
     n_labels = 2
 
+    # TODO In order to use checkpointing as a callback. Need to refactor the code 
+    # ... using class based keras API as shown here: 
+    # https://github.com/danielegrattarola/spektral/blob/master/examples/graph_prediction/tud_mincut.py
     checkpoint_filepath = 'checkpoint/'
     model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath=checkpoint_filepath,
@@ -317,7 +254,6 @@ if __name__ == '__main__':
         monitor='val_accuracy',
         mode='max',
         save_best_only=True)
-
 
     # Data loaders
     loader_tr = DisjointLoader(data_tr, batch_size=batch_size, epochs=epochs, shuffle=True)
@@ -332,6 +268,44 @@ if __name__ == '__main__':
     learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(boundaries, values)
     optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate_fn)
     loss_fn = CategoricalCrossentropy()
+
+    @tf.function(input_signature=loader_tr.tf_signature(), experimental_relax_shapes=True)
+    @tf.autograph.experimental.do_not_convert
+    def train_step(inputs, target):
+        """Runs the neural network training using tensorflow backend
+        """
+        print('Training network...')
+        with tf.GradientTape() as tape:
+            predictions = model(inputs, training=True)
+            loss = loss_fn(target, predictions) + sum(model.losses)        
+        
+        gradients = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        acc = tf.reduce_mean(categorical_accuracy(target, predictions))
+        return loss, acc
+
+    def evaluate(loader):
+        """Runs evaluation of the model on a provdided data-generation
+        """
+        output = []
+        preds = []
+        step = 0
+        print('Evaluating model on dataset...')
+        while step < loader.steps_per_epoch:
+            step += 1
+            inputs, target = loader.__next__()
+            pred = model(inputs, training=False)
+            preds.append(pred)
+            outs = (
+                loss_fn(target, pred),
+                tf.reduce_mean(categorical_accuracy(target, pred)),
+                len(target),  # Keep track of batch size
+            )
+    
+            output.append(outs)
+            if step == loader.steps_per_epoch:
+                output = np.array(output)
+                return np.average(output[:, :-1], 0, weights=output[:, -1]), preds
 
     # Run training loop        
     epoch = step = 0
