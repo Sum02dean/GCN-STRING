@@ -1,26 +1,35 @@
 import os
 import numpy as np
 import tensorflow as tf
-import spektral
-from tensorflow.keras.models import Model
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, LearningRateScheduler
-from tensorflow.keras.layers import Dense
 from tensorflow.keras.losses import CategoricalCrossentropy
 from tensorflow.keras.metrics import categorical_accuracy
-from tensorflow.keras.optimizers import Adam, SGD
-from spektral.datasets import TUDataset
 from spektral.models import GeneralGNN
-from spektral.data import Dataset, DisjointLoader, Graph, BatchLoader
-from spektral.layers import GCSConv, GlobalAvgPool, GCNConv, GlobalSumPool, MinCutPool, MessagePassing
-from spektral.layers.pooling import TopKPool
+from spektral.data import Dataset, DisjointLoader, Graph
 import networkx as nx
 import pandas as pd
-import pickle
 import glob
+import random
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc
+from scipy.sparse import coo_matrix
+
+"""GCN implemented using spektral: https://graphneural.network/
+    Neural network method: https://arxiv.org/pdf/2011.08843.pdf
+"""
 
 # Load in label by name
 def get_label(file, labels):
+    """Converts labels to label list (required for model)
+
+    :param file: graph_data file
+    :type file: string
+    :param labels: label from graph_labels file
+    :type labels: int
+    :return: returns model formatted labels
+    :rtype: list of lists
+    """
     pair_1 = file.split('/')[-1]
     pair_1, pair_2 = pair_1.split("and")
     pair_1 = pair_1.replace(".gpickle", "")
@@ -29,12 +38,97 @@ def get_label(file, labels):
     return file, l
 
 def binary_acc(y_pred, y_test):
+    """Compute the accuray between predictions and labels   
+
+    :param y_pred: label logits (not probabilities)
+    :type y_pred: tensor with same dimensions as labels 
+    :param y_test: ground truth labels
+    :type y_test: tensor
+    :return: Calculates accuracy, class labels, class probabilities
+    :rtype: float, int, float
+    """
     probas = torch.sigmoid(y_pred)
     y_pred_tag = torch.round(torch.sigmoid(y_pred))
     correct_results_sum = (y_pred_tag == y_test).sum().float()
     acc = correct_results_sum/y_test.shape[0]
     acc = torch.round(acc * 100)
     return acc, y_pred_tag, probas
+
+def read_graphs(graphs):
+    """Reads graph_data files to a networkx file
+
+    :param graphs: list or set of all graph files 
+    :type graphs: iterable    
+    :return: list of networkx graphs
+    :rtype: networkx graph objects
+    """
+    l = []
+    with tqdm(len(graphs)) as pbar:
+        for graph in graphs:
+            G = nx.read_gpickle(graph)
+            l.append(G)
+            pbar.update(1)
+        return l
+
+def format_graphs(graphs):
+    """Cleans nx graphs and add edge features correctly
+    :param graphs: list of networkx graphs
+    :type graphs: list of nx graphs
+    :return: re-formatted graphs
+    :rtype: formatted nx graph objects
+    """
+    l = []
+    with tqdm(len(graphs)) as pbar:
+        for graph in graphs:
+            # Convert into pytorch geoetric dataset
+            F = nx.convert_node_labels_to_integers(graph)
+            # nx default addition edge name - undesirbale
+            att = 'weight' 
+            for (n1, n2, d) in F.edges(data=True):
+                if att in d:
+                    # To clear specific edge data
+                    d.pop(att, None) 
+            l.append(F)
+            pbar.update(1)
+        return l
+
+@tf.function(input_signature=loader_tr.tf_signature(), experimental_relax_shapes=True)
+@tf.autograph.experimental.do_not_convert
+def train_step(inputs, target):
+    """Runs the neural network training using tensorflow backend
+    """
+    
+    with tf.GradientTape() as tape:
+        predictions = model(inputs, training=True)
+        loss = loss_fn(target, predictions) + sum(model.losses)        
+    
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    acc = tf.reduce_mean(categorical_accuracy(target, predictions))
+    return loss, acc
+
+
+def evaluate(loader):
+    """Runs evaluation of the model on a provdided data-generation
+    """
+    output = []
+    preds = []
+    step = 0
+    while step < loader.steps_per_epoch:
+        step += 1
+        inputs, target = loader.__next__()
+        pred = model(inputs, training=False)
+        preds.append(pred)
+        outs = (
+            loss_fn(target, pred),
+            tf.reduce_mean(categorical_accuracy(target, pred)),
+            len(target),  # Keep track of batch size
+        )
+  
+        output.append(outs)
+        if step == loader.steps_per_epoch:
+            output = np.array(output)
+            return np.average(output[:, :-1], 0, weights=output[:, -1]), preds
 
 
 class MyDataset(Dataset):
@@ -118,10 +212,22 @@ class MyDataset(Dataset):
             x = features
         return x
 
-    def get_spektral_graph(self, x, e, a, y):
-        return Graph(x=x, a=a, y=y)
+    def get_spektral_graph(self, x, a, y, e=None):
+        if e != None:
+            return Graph(x=x, a=a, y=y, e=e)
+        else:
+            return Graph(x=x, a=a, y=y)
 
     def generate_spektral_graph(self, graph, label):
+        """Generates a spektral graph 
+
+        :param graph: formatted networkx graph (see format_graphs() function)
+        :type graph: nx graph object
+        :param label: class label of the graph 1.0 or 0.0
+        :type label: float
+        :return: spektral formatted graph
+        :rtype: Spektal graph object
+        """
         # Graphs must be a collection of nx.graph obejects > 1 
         adjacency_matrix = self.get_adjacency(graph, to_sparse=False)
         edge_features = self.get_edge_features(graph, to_sparse=False)
@@ -129,119 +235,7 @@ class MyDataset(Dataset):
         graph_labels = np.array(label)
         SG = self.get_spektral_graph(x=node_features, e=edge_features, a=adjacency_matrix, y=graph_labels)
         return SG
-
-    def read_graph(self, file):
-        G = nx.read_gpickle(file)
-        return G
         
-    def format_graph(self, graph):
-        # Convert str names to ints
-        F = nx.convert_node_labels_to_integers(graph)
-        # nx default addition edge name - undesirbale
-        att = 'weight' 
-        for (n1, n2, d) in F.edges(data=True):
-            if att in d:
-                # To clear specific edge data
-                d.pop(att, None) 
-        return F
-
-def get_adjacency(graph, to_sparse=True):
-    """Retrieves the adjacency matrix for a single graph    
-
-    :param graphs: networkx graph object
-    :type graphs: nx graph  
-    :return: adjacency matrix of graph
-    :rtype: numyp dense array
-    """
-    if to_sparse:
-        a = coo_matrix(nx.adjacency_matrix(graph))
-    else:
-        a = nx.adjacency_matrix(graph).todense()
-    return a
-
-def get_node_features(graph, feature_name='x'):
-    """Grabs all node features of a graph
-
-    :param graph: nx graph object
-    :type graph: nx object
-    :param feature_name: name of the feature, defaults to 'x'
-    :type feature_name: str, optional
-    :return: collection of node features
-    :rtype: numpy array of shape: (n_nodes, n_features)
-    """
-    return np.vstack([x[1] for x in graph.nodes.data(feature_name)])
-
-def get_edge_features(graph, to_sparse=True):
-    """Grabs all edge features of a graph
-
-    :param graph: nx graph object
-    :type graph: nx object
-    :return: collection of edge features
-    :rtype: numpy array of shape (n_edges, n_features)
-    """
-    features = []
-    edge_features = [x[2] for x in list(graph.edges(data=True))]
-    edge_feature_names = list(edge_features[0].keys())
-
-    for nfn in edge_feature_names:
-        x = [feature[nfn] for feature in edge_features]
-        features.append(x)
-    features = np.array(features).T
-    if to_sparse:
-        x = coo_matrix(features)
-    else:
-        x = features
-    return x
-
-def get_spektral_graph(x, e, a, y):
-    return Graph(x=x, a=a, y=y)
-
-def generate_spektral_graphs(graphs, label):
-    l = []
-    with tqdm(len(graphs)) as pbar:
-        for graph in graphs:
-            # Graphs must be a collection of nx.graph obejects > 1 
-            adjacency_matrix = get_adjacency(graph, to_sparse=False)
-            edge_features = get_edge_features(graph, to_sparse=False)
-            node_features = get_node_features(graph, feature_name='x')
-            SG = get_spektral_graph(x=node_features, e=edge_features, a=adjacency_matrix, y=label)
-            l.append(SG)
-            pbar.update(1)
-        return l
-
-# Load in label by name
-def get_label(file, labels):
-    pair_1 = file.split('/')[-1]
-    pair_1, pair_2 = pair_1.split("and")
-    pair_1 = pair_1.replace(".gpickle", "")
-    pair_2 = pair_2.replace(".gpickle", "")
-    l = int(labels.loc[(labels.protein_1 == pair_1) & (labels.protein_2 == pair_2)].label)
-    return file, l
-
-def read_graphs(graphs):
-    l = []
-    with tqdm(len(graphs)) as pbar:
-        for graph in graphs:
-            G = nx.read_gpickle(graph)
-            l.append(G)
-            pbar.update(1)
-        return l
-
-def format_graphs(graphs):
-    l = []
-    with tqdm(len(graphs)) as pbar:
-        for graph in graphs:
-            # Convert into pytorch geoetric dataset
-            F = nx.convert_node_labels_to_integers(graph)
-            # nx default addition edge name - undesirbale
-            att = 'weight' 
-            for (n1, n2, d) in F.edges(data=True):
-                if att in d:
-                    # To clear specific edge data
-                    d.pop(att, None) 
-            l.append(F)
-            pbar.update(1)
-        return l
 
 # Import the data
 graph_dir_path = '../scripts/dca_graph_data'
@@ -254,7 +248,6 @@ graph_labels = pd.read_csv(graph_labels[0])
 # Create positive and negative sets
 positives = []
 pos_labels = []
-
 negatives = []
 neg_labels = []
 
@@ -269,7 +262,6 @@ for i, file in enumerate(graph_files):
         neg_labels.append([0, 1])
 
 # Balance the number of negatives with number of positives
-import random
 negatives = random.sample(negatives, len(positives))
 neg_labels = random.sample(neg_labels, len(positives))
 
@@ -330,48 +322,12 @@ loader_te = DisjointLoader(data_te, batch_size=batch_size, shuffle=False)
 
 # Build general model
 model = GeneralGNN(dataset.n_labels, activation="softmax")
-# Optimizer = Adam(learning_rate)
 boundaries = [0, int(np.floor(0.3 * epochs))]
-# values = [0.0002, 0.02, 0.2]
 values = [0.02, 0.002, 0.0002]
 
 learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(boundaries, values)
 optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate_fn)
 loss_fn = CategoricalCrossentropy()
-
-@tf.function(input_signature=loader_tr.tf_signature(), experimental_relax_shapes=True)
-@tf.autograph.experimental.do_not_convert
-def train_step(inputs, target):
-    
-    with tf.GradientTape() as tape:
-        predictions = model(inputs, training=True)
-        loss = loss_fn(target, predictions) + sum(model.losses)        
-    
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    acc = tf.reduce_mean(categorical_accuracy(target, predictions))
-    return loss, acc
-
-
-def evaluate(loader):
-    output = []
-    preds = []
-    step = 0
-    while step < loader.steps_per_epoch:
-        step += 1
-        inputs, target = loader.__next__()
-        pred = model(inputs, training=False)
-        preds.append(pred)
-        outs = (
-            loss_fn(target, pred),
-            tf.reduce_mean(categorical_accuracy(target, pred)),
-            len(target),  # Keep track of batch size
-        )
-  
-        output.append(outs)
-        if step == loader.steps_per_epoch:
-            output = np.array(output)
-            return np.average(output[:, :-1], 0, weights=output[:, -1]), preds
 
 # Run training loop        
 epoch = step = 0
@@ -396,26 +352,22 @@ for batch in loader_tr:
         weights.append(w)    
         performance.append(results_te[-1])
         results = []
-        
+
+# Run evaluations
 loader = loader_te
 outputs, preds = evaluate(loader)
-
 probas = np.vstack([x.numpy() for x in preds])
 probas = [x[1] for x in probas]
 
-
+# Aggreate the labels
 labels = []
 for graph in data_te:
     labels.append(graph.y[0])
 l = [x for x in pos_probas]
 
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, auc
-
+# Plot ROC
 fpr, tpr, _ = roc_curve(labels,probas)
 roc_auc = auc(fpr, tpr)
-
-# Plotting
 lw = 0.8
 plt.figure()
 plt.plot(fpr, tpr, "r--", lw=lw, label="ROC curve (area = %0.2f)" % roc_auc)
@@ -425,6 +377,7 @@ plt.ylim([0.0, 1.05])
 plt.xlabel("False Positive Rate")
 plt.ylabel("True Positive Rate")
 plt.title("Receiver operating characteristic for DCA-GCN")
+plt.savefig('ROC curve (spektral GCN).png')
 plt.legend(loc="lower right")
 plt.show()
 plt.show()
