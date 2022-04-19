@@ -285,6 +285,8 @@ if __name__ == '__main__':
 
     # Define model parameters
     n_labels = 2
+
+    # For saving model weights at each epoch
     weights = []
     performance = []
   
@@ -416,5 +418,6 @@ if __name__ == '__main__':
     output_dict['labels'] = labels
     df = pd.DataFrame(output_dict)
     df.to_csv(os.path.join(output_directory, prediction_file_name))
+
 
 
