@@ -335,7 +335,7 @@ if __name__ == '__main__':
         output = []
         preds = []
         step = 0
-        print('Evaluating model on dataset...')
+        
         while step < loader.steps_per_epoch:
             step += 1
             inputs, target = loader.__next__()
@@ -378,6 +378,7 @@ if __name__ == '__main__':
             results = []
 
     # Run evaluations
+    print('Evaluating model on dataset...')
     loader = loader_te
     outputs, preds = evaluate(loader)
     probas = np.vstack([x.numpy() for x in preds])
