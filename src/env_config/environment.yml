@@ -1,4 +1,4 @@
-name: dca
+name: gcn-env
 channels:
   - bioconda
   - conda-forge
@@ -259,4 +259,3 @@ dependencies:
     - xarray==0.18.0
     - xgboost==1.4.2
     - zict==2.0.0
-prefix: /mnt/mnemo5/sum02dean/miniconda3/envs/dca
