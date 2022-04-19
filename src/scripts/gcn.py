@@ -198,9 +198,6 @@ if __name__ == '__main__':
     parser.add_argument('-mn', '--model_name', type=str, metavar='',
                         required=True, default='output_0', help='name of the model')
 
-    parser.add_argument('-o', '--output_directory', type=str, metavar='',
-                        required=True, default='outputs', help='name of the model')
-
     parser.add_argument('-bs', '--batch_size', type=int, metavar='',
                         required=True, default=50, help='number of samples per batch')
 
@@ -222,13 +219,13 @@ if __name__ == '__main__':
     epochs = int(args.epochs)
     samples = int(args.num_samples)
 
-    # Create output directory
-    isExist = os.path.exists(os.path.join(output_directory))
+    # Create directories
+    isExist = os.path.exists(os.path.join(output_directory, model_name))
     if not isExist:
         # Create it
-        os.makedirs(os.path.join(output_directory))
-        print("{} directory created.".format(
-            os.path.join(output_directory)))
+        file_path = os.path.join(output_directory, model_name)
+        os.makedirs(path)
+        print("{} directory created.".format(file_path))
 
     # Import the data
     graph_dir_path = '../data/graph_data'
@@ -406,17 +403,22 @@ if __name__ == '__main__':
     plt.title("Receiver operating characteristic for DCA-GCN")
     plt.legend(loc="lower right")
 
-    # Save the ROC
-    fig_file_name =  f'{model_name}.png'
-    prediction_file_name =  f'{model_name}_predictions.csv'
-    plt.savefig(os.path.join(output_directory,fig_file_name))
+    # Save outputs
+    plot_name =  f'{model_name}.png'
+    fig_file_name = os.path.join('../outputs', model_name, plot_name)
+    output_name =  f'{model_name}.npz'
+    outputs_file_name = os.path.join('../outputs', model_name, output_name)
+
+    plt.savefig(fig_file_name)
+    np.savez(
+        outputs_file_name, probas=np.array(probas), 
+        labels=np.array(labels), weights=np.array(weights),
+        performance=np.array(performance)
+        )
 
     # Save predictions and labels
-    output_dict = {}
-    output_dict['probability'] = probas
-    output_dict['labels'] = labels
-    df = pd.DataFrame(output_dict)
-    df.to_csv(os.path.join(output_directory, prediction_file_name))
-
-
-
+    # output_dict = {}
+    # output_dict['probability'] = probas
+    # output_dict['labels'] = labels
+    # df = pd.DataFrame(output_dict)
+    # df.to_csv(os.path.join('../outputs', prediction_file_name))
