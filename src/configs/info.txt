@@ -1,0 +1,2 @@
+Netfurf for each protein:/mnt/mnemo6/tao/PPI_Coevolution/STRING_data_11.5/511145_netsurfp2_output
+Original sequence: /mnt/mnemo6/tao/PPI_Coevolution/STRING_data_11.5/511145ByProteins/
