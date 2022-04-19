@@ -1,4 +1,4 @@
-![STRING logo](src/configs/logo.png)
+![STRING logo](src/configs/logo.jpg)
 
 
 # Predict Phyiscal Protein Interactions using Graph Neural Networks
