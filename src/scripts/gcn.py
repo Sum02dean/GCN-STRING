@@ -19,7 +19,22 @@ from scipy.sparse import coo_matrix
     Neural network method: https://arxiv.org/pdf/2011.08843.pdf
 """
 
-# Load in label by name
+# Script specific functions and methods
+@tf.function(input_signature=loader_tr.tf_signature(), experimental_relax_shapes=True)
+@tf.autograph.experimental.do_not_convert
+def train_step(inputs, target):
+    """Runs the neural network training using tensorflow backend
+    """
+    
+    with tf.GradientTape() as tape:
+        predictions = model(inputs, training=True)
+        loss = loss_fn(target, predictions) + sum(model.losses)        
+    
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    acc = tf.reduce_mean(categorical_accuracy(target, predictions))
+    return loss, acc
+
 def get_label(file, labels):
     """Converts labels to label list (required for model)
 
@@ -36,6 +51,7 @@ def get_label(file, labels):
     pair_2 = pair_2.replace(".gpickle", "")
     l = int(labels.loc[(labels.protein_1 == pair_1) & (labels.protein_2 == pair_2)].label)
     return file, l
+
 
 def binary_acc(y_pred, y_test):
     """Compute the accuray between predictions and labels   
@@ -54,6 +70,7 @@ def binary_acc(y_pred, y_test):
     acc = torch.round(acc * 100)
     return acc, y_pred_tag, probas
 
+
 def read_graphs(graphs):
     """Reads graph_data files to a networkx file
 
@@ -69,6 +86,7 @@ def read_graphs(graphs):
             l.append(G)
             pbar.update(1)
         return l
+
 
 def format_graphs(graphs):
     """Cleans nx graphs and add edge features correctly
@@ -92,21 +110,6 @@ def format_graphs(graphs):
             pbar.update(1)
         return l
 
-@tf.function(input_signature=loader_tr.tf_signature(), experimental_relax_shapes=True)
-@tf.autograph.experimental.do_not_convert
-def train_step(inputs, target):
-    """Runs the neural network training using tensorflow backend
-    """
-    
-    with tf.GradientTape() as tape:
-        predictions = model(inputs, training=True)
-        loss = loss_fn(target, predictions) + sum(model.losses)        
-    
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    acc = tf.reduce_mean(categorical_accuracy(target, predictions))
-    return loss, acc
-
 
 def evaluate(loader):
     """Runs evaluation of the model on a provdided data-generation
@@ -129,7 +132,6 @@ def evaluate(loader):
         if step == loader.steps_per_epoch:
             output = np.array(output)
             return np.average(output[:, :-1], 0, weights=output[:, -1]), preds
-
 
 class MyDataset(Dataset):
     """
@@ -237,147 +239,149 @@ class MyDataset(Dataset):
         return SG
         
 
-# Import the data
-graph_dir_path = '../scripts/dca_graph_data'
-labels_dir_path = '../scripts/dca_graph_labels'
+if __name__ == '__main__':
 
-graph_files = glob.glob(os.path.join(graph_dir_path, '*'))
-graph_labels = glob.glob(os.path.join(labels_dir_path, '*'))
-graph_labels = pd.read_csv(graph_labels[0])
+    # Import the data
+    graph_dir_path = '../scripts/dca_graph_data'
+    labels_dir_path = '../scripts/dca_graph_labels'
 
-# Create positive and negative sets
-positives = []
-pos_labels = []
-negatives = []
-neg_labels = []
+    graph_files = glob.glob(os.path.join(graph_dir_path, '*'))
+    graph_labels = glob.glob(os.path.join(labels_dir_path, '*'))
+    graph_labels = pd.read_csv(graph_labels[0])
 
-for i, file in enumerate(graph_files):
-    obs, label = get_label(file, graph_labels)
-    
-    if label == 1:
-        positives.append(obs)
-        pos_labels.append([1, 0])
-    else:
-        negatives.append(obs)
-        neg_labels.append([0, 1])
+    # Create positive and negative sets
+    positives = []
+    pos_labels = []
+    negatives = []
+    neg_labels = []
 
-# Balance the number of negatives with number of positives
-negatives = random.sample(negatives, len(positives))
-neg_labels = random.sample(neg_labels, len(positives))
-
-assert(len(positives)==len(negatives))
-assert(len(pos_labels)==len(neg_labels))
-
-pos_graphs = read_graphs(positives)
-neg_graphs = read_graphs(negatives)
-
-pos_graphs = format_graphs(pos_graphs)
-neg_graphs = format_graphs(neg_graphs)
-
-sg_pos = generate_spektral_graphs(pos_graphs, 1.0)
-sg_neg = generate_spektral_graphs(neg_graphs, 0.0)
-
-balanced_graphs = positives + negatives
-class_labels = pos_labels + neg_labels
-
-# This part takes a very long time
-samples = len(balanced_graphs)
-dataset = MyDataset(files=balanced_graphs, labels=class_labels, n_samples=samples)
-
-# Split into train and test
-train_idx = np.random.choice(a=[False, True], size=len(balanced_graphs))
-val_idx = ~train_idx
-
-# Convert range to array 
-full_idx = np.array(range(len(balanced_graphs)))
-
-# Grab indices using Boolean array
-tr_idx = full_idx[train_idx]
-te_idx = full_idx[val_idx]
-
-# Slice train and test data
-data_tr = dataset[tr_idx]
-data_te = dataset[te_idx]
-
-batch_size = 50
-learning_rate = 0.0002
-epochs = 50
-weights = []
-performance = []
-n_labels = 2
-
-checkpoint_filepath = 'checkpoint/'
-model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-    filepath=checkpoint_filepath,
-    save_weights_only=True,
-    monitor='val_accuracy',
-    mode='max',
-    save_best_only=True)
-
-
-# Data loaders
-loader_tr = DisjointLoader(data_tr, batch_size=batch_size, epochs=epochs, shuffle=True)
-loader_te = DisjointLoader(data_te, batch_size=batch_size, shuffle=False)
-
-
-# Build general model
-model = GeneralGNN(dataset.n_labels, activation="softmax")
-boundaries = [0, int(np.floor(0.3 * epochs))]
-values = [0.02, 0.002, 0.0002]
-
-learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(boundaries, values)
-optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate_fn)
-loss_fn = CategoricalCrossentropy()
-
-# Run training loop        
-epoch = step = 0
-results = []
-for batch in loader_tr:
-    step += 1
-    loss, acc = train_step(*batch)
-    results.append((loss, acc))
-
-    if step == loader_tr.steps_per_epoch:
-        step = 0
-        epoch += 1
-        results_te,_ = evaluate(loader_te)
-        print(
-            "Ep. {} - Loss: {:.3f} - Acc: {:.3f} - Test loss: {:.3f} - Test acc: {:.3f}".format(
-                epoch, *np.mean(results, 0), *results_te
-            )
-        )
+    for i, file in enumerate(graph_files):
+        obs, label = get_label(file, graph_labels)
         
-        # Collect stats for re-loading model with specific weights
-        w = model.get_weights()
-        weights.append(w)    
-        performance.append(results_te[-1])
-        results = []
+        if label == 1:
+            positives.append(obs)
+            pos_labels.append([1, 0])
+        else:
+            negatives.append(obs)
+            neg_labels.append([0, 1])
 
-# Run evaluations
-loader = loader_te
-outputs, preds = evaluate(loader)
-probas = np.vstack([x.numpy() for x in preds])
-probas = [x[1] for x in probas]
+    # Balance the number of negatives with number of positives
+    negatives = random.sample(negatives, len(positives))
+    neg_labels = random.sample(neg_labels, len(positives))
 
-# Aggreate the labels
-labels = []
-for graph in data_te:
-    labels.append(graph.y[0])
-l = [x for x in pos_probas]
+    assert(len(positives)==len(negatives))
+    assert(len(pos_labels)==len(neg_labels))
 
-# Plot ROC
-fpr, tpr, _ = roc_curve(labels,probas)
-roc_auc = auc(fpr, tpr)
-lw = 0.8
-plt.figure()
-plt.plot(fpr, tpr, "r--", lw=lw, label="ROC curve (area = %0.2f)" % roc_auc)
-plt.plot([0, 1], [0, 1], color="navy", lw=lw, linestyle="--")
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
-plt.title("Receiver operating characteristic for DCA-GCN")
-plt.savefig('ROC curve (spektral GCN).png')
-plt.legend(loc="lower right")
-plt.show()
-plt.show()
+    pos_graphs = read_graphs(positives)
+    neg_graphs = read_graphs(negatives)
+
+    pos_graphs = format_graphs(pos_graphs)
+    neg_graphs = format_graphs(neg_graphs)
+
+    sg_pos = generate_spektral_graphs(pos_graphs, 1.0)
+    sg_neg = generate_spektral_graphs(neg_graphs, 0.0)
+
+    balanced_graphs = positives + negatives
+    class_labels = pos_labels + neg_labels
+
+    # This part takes a very long time
+    samples = len(balanced_graphs)
+    dataset = MyDataset(files=balanced_graphs, labels=class_labels, n_samples=samples)
+
+    # Split into train and test
+    train_idx = np.random.choice(a=[False, True], size=len(balanced_graphs))
+    val_idx = ~train_idx
+
+    # Convert range to array 
+    full_idx = np.array(range(len(balanced_graphs)))
+
+    # Grab indices using Boolean array
+    tr_idx = full_idx[train_idx]
+    te_idx = full_idx[val_idx]
+
+    # Slice train and test data
+    data_tr = dataset[tr_idx]
+    data_te = dataset[te_idx]
+
+    batch_size = 50
+    learning_rate = 0.0002
+    epochs = 50
+    weights = []
+    performance = []
+    n_labels = 2
+
+    checkpoint_filepath = 'checkpoint/'
+    model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+        filepath=checkpoint_filepath,
+        save_weights_only=True,
+        monitor='val_accuracy',
+        mode='max',
+        save_best_only=True)
+
+
+    # Data loaders
+    loader_tr = DisjointLoader(data_tr, batch_size=batch_size, epochs=epochs, shuffle=True)
+    loader_te = DisjointLoader(data_te, batch_size=batch_size, shuffle=False)
+
+
+    # Build general model
+    model = GeneralGNN(dataset.n_labels, activation="softmax")
+    boundaries = [0, int(np.floor(0.3 * epochs))]
+    values = [0.02, 0.002, 0.0002]
+
+    learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(boundaries, values)
+    optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate_fn)
+    loss_fn = CategoricalCrossentropy()
+
+    # Run training loop        
+    epoch = step = 0
+    results = []
+    for batch in loader_tr:
+        step += 1
+        loss, acc = train_step(*batch)
+        results.append((loss, acc))
+
+        if step == loader_tr.steps_per_epoch:
+            step = 0
+            epoch += 1
+            results_te,_ = evaluate(loader_te)
+            print(
+                "Ep. {} - Loss: {:.3f} - Acc: {:.3f} - Test loss: {:.3f} - Test acc: {:.3f}".format(
+                    epoch, *np.mean(results, 0), *results_te
+                )
+            )
+            
+            # Collect stats for re-loading model with specific weights
+            w = model.get_weights()
+            weights.append(w)    
+            performance.append(results_te[-1])
+            results = []
+
+    # Run evaluations
+    loader = loader_te
+    outputs, preds = evaluate(loader)
+    probas = np.vstack([x.numpy() for x in preds])
+    probas = [x[1] for x in probas]
+
+    # Aggreate the labels
+    labels = []
+    for graph in data_te:
+        labels.append(graph.y[0])
+    l = [x for x in pos_probas]
+
+    # Plot ROC
+    fpr, tpr, _ = roc_curve(labels,probas)
+    roc_auc = auc(fpr, tpr)
+    lw = 0.8
+    plt.figure()
+    plt.plot(fpr, tpr, "r--", lw=lw, label="ROC curve (area = %0.2f)" % roc_auc)
+    plt.plot([0, 1], [0, 1], color="navy", lw=lw, linestyle="--")
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("Receiver operating characteristic for DCA-GCN")
+    plt.savefig('ROC curve (spektral GCN).png')
+    plt.legend(loc="lower right")
+    plt.show()
+    plt.show()
