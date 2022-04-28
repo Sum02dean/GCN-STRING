@@ -38,7 +38,7 @@ bash run_graph_prediction.sh
 
 ### Example Results:
 Running the GCN on the E.coli dataset shows a learnable sigal and good predictive performance 
-![<example GCN results](src/configs/gcn_example_results.png){ width: 200px; }
+![<example GCN results](src/configs/gcn_example_results.png){ width: 80; }
 
 
 ### Model:
