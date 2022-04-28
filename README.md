@@ -1,4 +1,4 @@
-![STRING logo](src/configs/logo.jpg)
+![STRING logo](src/configs/logo.png)
 
 
 # Predict Phyiscal Protein Interactions using Graph Neural Networks
@@ -51,6 +51,4 @@ The conda environemnt provided should contain all of these requirements. If not,
 | Dependency | Installation |
 | ------ | ------ | 
 | Spektral (cpu, linux) |[Pypi](https://pypi.org/project/spektral/)|
-| Pytorch (cpu, linux) |[Pypi](https://pytorch.org/)|
-| torch-summary |[Pypi](https://pypi.org/project/torch-summary/)|
 
