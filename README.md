@@ -38,7 +38,7 @@ bash run_graph_prediction.sh
 
 ### Example Results:
 Running the GCN on the E.coli dataset shows a learnable sigal and good predictive performance 
-![<example GCN results](src/configs/gcn_example_results.png =100x20)
+![example GCN results](src/configs/gcn_example_results.png =100x20)
 
 
 ### Model:
@@ -50,6 +50,7 @@ Running the GCN on the E.coli dataset shows a learnable sigal and good predictiv
 ### Potential Conflicts:
 There may be issues running this code from a local machine. It was designed to run on the s3it
 cluster. 
+
 ### Major Dependencies:
 The conda environemnt provided should contain all of these requirements. If not, you can find them at the following sources.
 
