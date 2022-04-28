@@ -1,24 +1,20 @@
 import os
 import numpy as np
 import tensorflow as tf
+import spektral
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, LearningRateScheduler
 from tensorflow.keras.losses import CategoricalCrossentropy
 from tensorflow.keras.metrics import categorical_accuracy
 from spektral.models import GeneralGNN
 from spektral.data import Dataset, DisjointLoader, Graph
+from spektral.layers.pooling import TopKPool
+from sklearn.metrics import roc_curve, auc
 import networkx as nx
 import pandas as pd
+import pickle
 import glob
-import random
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, auc
-from scipy.sparse import coo_matrix
-import argparse
-
-"""GCN implemented using spektral: https://graphneural.network/
-    Neural network method: https://arxiv.org/pdf/2011.08843.pdf
-"""
+import random
 
 # Set device as GPU if available
 physical_devices = tf.config.list_physical_devices("GPU")
@@ -59,6 +55,14 @@ def binary_acc(y_pred, y_test):
     acc = correct_results_sum/y_test.shape[0]
     acc = torch.round(acc * 100)
     return acc, y_pred_tag, probas
+
+def save_to_npz(outputs_file, output_name, probas, labels, weights, performance):
+    np.savez(
+        os.path.join(outputs_file, output_name), probas=np.array(probas), 
+        labels=np.array(labels), weights=np.array(weights),
+        performance=np.array(performance)
+        )
+     
 class MyDataset(Dataset):
     """
     A dataset generator fpr protein bi-molecular graphs.
@@ -169,8 +173,8 @@ class MyDataset(Dataset):
         edge_features = self.get_edge_features(graph, to_sparse=False)
         node_features = self.get_node_features(graph, feature_name='x')
         graph_labels = np.array(label)
-
-        if self.self.use_edge_data:
+        
+        if self.use_edge_data:
             SG = self.get_spektral_graph(x=node_features, e=edge_features, a=adjacency_matrix, y=graph_labels)
         else:
             SG = self.get_spektral_graph(x=node_features, a=adjacency_matrix, y=graph_labels)
@@ -185,11 +189,13 @@ class MyDataset(Dataset):
         F = nx.convert_node_labels_to_integers(graph)
         # nx default addition edge name - undesirbale
         att = 'weight' 
+        
         for (n1, n2, d) in F.edges(data=True):
             if att in d:
                 # To clear specific edge data
                 d.pop(att, None) 
         return F   
+
 
 if __name__ == '__main__':
 
@@ -202,7 +208,7 @@ if __name__ == '__main__':
                         required=True, default=50, help='number of samples per batch')
 
     parser.add_argument('-lr', '--learning_rate', type=float, metavar='',
-                        required=True, default=0.0002, help='earning rate initialization')
+                        required=True, default=0.0002, help='learning rate initialization')
 
     parser.add_argument('-epochs', '--e', type=int, metavar='',
                         required=True, default=50, help='number of epochs to train for')
@@ -230,6 +236,9 @@ if __name__ == '__main__':
     # Import the data
     graph_dir_path = '../data/graph_data'
     labels_dir_path = '../data/graph_labels'
+    # Import the data
+    graph_dir_path = '../scripts/dca_graph_data'
+    labels_dir_path = '../scripts/dca_graph_labels'
 
     graph_files = glob.glob(os.path.join(graph_dir_path, '*'))
     graph_labels = glob.glob(os.path.join(labels_dir_path, '*'))
@@ -243,18 +252,19 @@ if __name__ == '__main__':
 
     for i, file in enumerate(graph_files):
         obs, label = get_label(file, graph_labels)
-        
+
         if label == 1:
             positives.append(obs)
-            pos_labels.append([1, 0])
+            pos_labels.append([0,1])
         else:
             negatives.append(obs)
-            neg_labels.append([0, 1])
+            neg_labels.append([1,0])
 
     # Balance the number of negatives with number of positives
     negatives = random.sample(negatives, len(positives))
     neg_labels = random.sample(neg_labels, len(positives))
 
+    # Test lengths are equal
     assert(len(positives)==len(negatives))
     assert(len(pos_labels)==len(neg_labels))
 
@@ -263,6 +273,8 @@ if __name__ == '__main__':
     class_labels = pos_labels + neg_labels
 
     # NOTE: This part takes a very long time
+    # samples = len(balanced_graphs)
+    samples = len(balanced_graphs)
     dataset = MyDataset(files=balanced_graphs, labels=class_labels, n_samples=samples)
 
     # Split into train and test
@@ -281,17 +293,16 @@ if __name__ == '__main__':
     data_te = dataset[te_idx]
 
     # Define model parameters
-    n_labels = 2
-
-    # For saving model weights at each epoch
+    batch_size = 50
+    learning_rate = 0.0002
+    epochs = 5
     weights = []
     performance = []
-  
+    n_labels = 2
 
     # TODO In order to use checkpointing as a callback. Need to refactor the code 
     # ... using class based keras API as shown here: 
     # https://github.com/danielegrattarola/spektral/blob/master/examples/graph_prediction/tud_mincut.py
-
     checkpoint_filepath = 'checkpoint/'
     model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath=checkpoint_filepath,
@@ -303,7 +314,6 @@ if __name__ == '__main__':
     # Data loaders
     loader_tr = DisjointLoader(data_tr, batch_size=batch_size, epochs=epochs, shuffle=True)
     loader_te = DisjointLoader(data_te, batch_size=batch_size, shuffle=False)
-
 
     # Build general model
     model = GeneralGNN(dataset.n_labels, activation="softmax")
@@ -322,7 +332,7 @@ if __name__ == '__main__':
         with tf.GradientTape() as tape:
             predictions = model(inputs, training=True)
             loss = loss_fn(target, predictions) + sum(model.losses)        
-        
+
         gradients = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         acc = tf.reduce_mean(categorical_accuracy(target, predictions))
@@ -334,7 +344,6 @@ if __name__ == '__main__':
         output = []
         preds = []
         step = 0
-        
         while step < loader.steps_per_epoch:
             step += 1
             inputs, target = loader.__next__()
@@ -345,7 +354,7 @@ if __name__ == '__main__':
                 tf.reduce_mean(categorical_accuracy(target, pred)),
                 len(target),  # Keep track of batch size
             )
-    
+
             output.append(outs)
             if step == loader.steps_per_epoch:
                 output = np.array(output)
@@ -354,7 +363,6 @@ if __name__ == '__main__':
     # Run training loop        
     epoch = step = 0
     results = []
-    print('Training network...')
     for batch in loader_tr:
         step += 1
         loss, acc = train_step(*batch)
@@ -369,7 +377,7 @@ if __name__ == '__main__':
                     epoch, *np.mean(results, 0), *results_te
                 )
             )
-            
+
             # Collect stats for re-loading model with specific weights
             w = model.get_weights()
             weights.append(w)    
@@ -387,38 +395,34 @@ if __name__ == '__main__':
     labels = []
     for graph in data_te:
         labels.append(graph.y[0])
-    l = [x for x in probas]
 
     # Plot ROC
-    fpr, tpr, _ = roc_curve(labels, probas)
-    roc_auc = auc(fpr, tpr)
+    import matplotlib.pyplot as plt
+    fpr, tpr, _ = roc_curve(labels,probas)
+    roc_auc = auc(tpr, fpr)
     lw = 0.8
     plt.figure()
-    plt.plot(fpr, tpr, "r--", lw=lw, label="ROC curve (area = %0.2f)" % roc_auc)
+    plt.plot(tpr, fpr, "r--", lw=lw, label="ROC curve (area = %0.2f)" % roc_auc)
     plt.plot([0, 1], [0, 1], color="navy", lw=lw, linestyle="--")
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
     plt.title("Receiver operating characteristic for DCA-GCN")
-    plt.legend(loc="lower right")
+    plt.savefig('ROC curve (spektral GCN).png')
 
     # Save outputs
     plot_name =  f'{model_name}.png'
     fig_file_name = os.path.join('../outputs', model_name, plot_name)
     output_name =  f'{model_name}.npz'
-    outputs_file_name = os.path.join('../outputs', model_name, output_name)
+    outputs_file = os.path.join('../outputs', model_name)
 
+    # Check whether the specified path exists or not
+    isExist = os.path.exists(outputs_file)
+    if not isExist:
+        os.makedirs(outputs_file)
+        print("{} directory created.".format(outputs_file))
+
+    # Save all the data as npz file
     plt.savefig(fig_file_name)
-    np.savez(
-        outputs_file_name, probas=np.array(probas), 
-        labels=np.array(labels), weights=np.array(weights),
-        performance=np.array(performance)
-        )
-
-    # Save predictions and labels
-    # output_dict = {}
-    # output_dict['probability'] = probas
-    # output_dict['labels'] = labels
-    # df = pd.DataFrame(output_dict)
-    # df.to_csv(os.path.join('../outputs', prediction_file_name))
+    save_to_npz(outputs_file, output_name, probas, labels, weights, performance)
