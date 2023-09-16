@@ -65,10 +65,10 @@ def save_to_npz(outputs_file, output_name, probas, labels, weights, performance)
      
 class MyDataset(Dataset):
     """
-    A dataset generator fpr protein bi-molecular graphs.
+    A dataset generator for protein bi-molecular graphs.
     The task is to classify whether or not the proteins are physically interacting.
     """
-    # TODO: FIgure out how to include edfge data without error!
+    # TODO: FIgure out how to include edge data without error!
 
     def __init__(self, n_samples=100, labels=[1], use_edge_data=False, **kwargs):
         for name, value in kwargs.items():
@@ -87,7 +87,7 @@ class MyDataset(Dataset):
             
         def make_graph(idx=0):
             """ Responsible for generating a single graph observation."""
-            # Load Graphs (G) from files
+            # Load graphs (G) from files
             y = self.labels[idx]
             G = self.read_graph(self.files[idx])
             G = self.format_graph(G)
@@ -107,7 +107,7 @@ class MyDataset(Dataset):
         :param graphs: networkx graph object
         :type graphs: nx graph  
         :return: adjacency matrix of graph
-        :rtype: numyp dense array
+        :rtype: numpy dense array
         """
         if to_sparse:
             a = coo_matrix(nx.adjacency_matrix(graph))
@@ -236,7 +236,8 @@ if __name__ == '__main__':
     # Import the data
     graph_dir_path = '../data/graph_data'
     labels_dir_path = '../data/graph_labels'
-    # Import the data
+    
+    # Import the data for dca
     graph_dir_path = '../scripts/dca_graph_data'
     labels_dir_path = '../scripts/dca_graph_labels'
 
